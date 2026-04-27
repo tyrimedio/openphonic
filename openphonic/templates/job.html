@@ -57,6 +57,49 @@
         {% endif %}
         <a class="button secondary" href="/api/jobs/{{ job.id }}">JSON</a>
       </section>
+
+      {% if common_artifacts %}
+        <section class="panel">
+          <div class="section-heading">
+            <h2>Diagnostics</h2>
+            <span>{{ common_artifacts|length }} files</span>
+          </div>
+          <div class="actions compact">
+            {% for artifact in common_artifacts %}
+              <a class="button secondary" href="{{ artifact.url }}">{{ artifact.label }}</a>
+            {% endfor %}
+          </div>
+        </section>
+      {% endif %}
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Artifacts</h2>
+          <span>{{ artifacts|length }} files</span>
+        </div>
+        {% if artifacts %}
+          <table class="artifact-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Size</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for artifact in artifacts %}
+                <tr>
+                  <td class="mono">{{ artifact.name }}</td>
+                  <td>{{ artifact.size_bytes }} B</td>
+                  <td><a href="{{ artifact.url }}">Open</a></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="empty">No artifacts yet.</p>
+        {% endif %}
+      </section>
     </main>
   </body>
 </html>
