@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Openphonic</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <h1>Openphonic</h1>
+          <p>Small-team audio post-production</p>
+        </div>
+        <a class="button secondary" href="/api/jobs">API</a>
+      </header>
+
+      <section class="panel">
+        <form class="upload" action="/jobs" method="post" enctype="multipart/form-data">
+          <label>
+            Audio or video file
+            <input type="file" name="file" accept="audio/*,video/*" required>
+          </label>
+          <label>
+            Preset
+            <select name="preset">
+              <option value="podcast-default">Podcast default</option>
+            </select>
+          </label>
+          <button class="button" type="submit">Start processing</button>
+        </form>
+      </section>
+
+      <section class="jobs">
+        <div class="section-heading">
+          <h2>Recent Jobs</h2>
+          <span>{{ jobs|length }} shown</span>
+        </div>
+        {% if jobs %}
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Status</th>
+                <th>Stage</th>
+                <th>Progress</th>
+                <th>Created</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for job in jobs %}
+                <tr>
+                  <td>{{ job.original_filename }}</td>
+                  <td><span class="status {{ job.status }}">{{ job.status }}</span></td>
+                  <td>{{ job.current_stage or "-" }}</td>
+                  <td>
+                    <div class="meter" aria-label="{{ job.progress }} percent complete">
+                      <span style="width: {{ job.progress }}%"></span>
+                    </div>
+                  </td>
+                  <td>{{ job.created_at }}</td>
+                  <td><a href="/jobs/{{ job.id }}">Open</a></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="empty">No jobs yet.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

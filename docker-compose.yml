@@ -1,0 +1,14 @@
+services:
+  openphonic:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      OPENPHONIC_DATA_DIR: /data
+      OPENPHONIC_DATABASE_PATH: /data/openphonic.sqlite3
+      OPENPHONIC_PIPELINE_CONFIG: /app/config/default.yml
+    volumes:
+      - openphonic-data:/data
+
+volumes:
+  openphonic-data:

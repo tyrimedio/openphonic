@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openphonic"
+version = "0.1.0"
+description = "Small-scale open-source audio post-production pipeline inspired by Auphonic."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "AGPL-3.0-or-later" }
+authors = [{ name = "Openphonic contributors" }]
+dependencies = [
+  "fastapi>=0.110",
+  "jinja2>=3.1",
+  "python-dotenv>=1.0",
+  "python-multipart>=0.0.9",
+  "pyyaml>=6.0",
+  "uvicorn[standard]>=0.29",
+]
+
+[project.optional-dependencies]
+ml = [
+  "faster-whisper>=1.0",
+  "pyannote.audio>=3.1",
+  "demucs>=4.0",
+]
+audio = [
+  "pyloudnorm>=0.1",
+  "pedalboard>=0.9",
+]
+dev = [
+  "httpx>=0.28",
+  "pytest>=8.0",
+  "ruff>=0.4",
+]
+
+[project.scripts]
+openphonic = "openphonic.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["openphonic*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

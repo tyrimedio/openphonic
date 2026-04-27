@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="refresh" content="5">
+    <title>{{ job.original_filename }} · Openphonic</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell narrow">
+      <header class="topbar">
+        <div>
+          <a href="/">Back</a>
+          <h1>{{ job.original_filename }}</h1>
+          <p>{{ job.id }}</p>
+        </div>
+      </header>
+
+      <section class="panel">
+        <dl class="details">
+          <div>
+            <dt>Status</dt>
+            <dd><span class="status {{ job.status }}">{{ job.status }}</span></dd>
+          </div>
+          <div>
+            <dt>Stage</dt>
+            <dd>{{ job.current_stage or "-" }}</dd>
+          </div>
+          <div>
+            <dt>Progress</dt>
+            <dd>
+              <div class="meter wide" aria-label="{{ job.progress }} percent complete">
+                <span style="width: {{ job.progress }}%"></span>
+              </div>
+            </dd>
+          </div>
+          <div>
+            <dt>Created</dt>
+            <dd>{{ job.created_at }}</dd>
+          </div>
+          {% if job.error_message %}
+            <div>
+              <dt>Error</dt>
+              <dd class="error">{{ job.error_message }}</dd>
+            </div>
+          {% endif %}
+        </dl>
+      </section>
+
+      <section class="actions">
+        {% if job.status == "succeeded" and job.output_path %}
+          <a class="button" href="/api/jobs/{{ job.id }}/download">Download audio</a>
+        {% endif %}
+        {% if job.transcript_path %}
+          <a class="button secondary" href="/api/jobs/{{ job.id }}/transcript">Transcript</a>
+        {% endif %}
+        <a class="button secondary" href="/api/jobs/{{ job.id }}">JSON</a>
+      </section>
+    </main>
+  </body>
+</html>
