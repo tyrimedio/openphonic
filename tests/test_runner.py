@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from openphonic.pipeline.config import PipelineConfig
@@ -63,6 +64,14 @@ def test_runner_validates_media_and_writes_metadata_artifact(tmp_path, monkeypat
 
     assert result.output_path.name == "01_ingest.wav"
     assert result.artifacts["media_metadata"].exists()
+    assert result.artifacts["ingest_wav"] == result.output_path
+    assert result.artifacts["final_audio"] == result.output_path
+    assert result.artifacts["pipeline_manifest"].exists()
     assert '"format_name": "wav"' in result.artifacts["media_metadata"].read_text()
+    manifest = json.loads(result.artifacts["pipeline_manifest"].read_text(encoding="utf-8"))
+    assert manifest["pipeline_name"] == "test"
+    assert manifest["output_path"] == str(result.output_path)
+    assert manifest["artifacts"]["media_metadata"] == str(result.artifacts["media_metadata"])
+    assert manifest["artifacts"]["final_audio"] == str(result.output_path)
     assert progress[:2] == [("metadata", 8), ("ingest", 10)]
     assert FakeIngestStage.seen_command_log_path == command_log_path

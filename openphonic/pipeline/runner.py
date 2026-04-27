@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from openphonic.core.logging import utc_timestamp
 from openphonic.pipeline.config import PipelineConfig
 from openphonic.pipeline.ffmpeg import probe_media
 from openphonic.pipeline.stages import (
@@ -42,6 +43,29 @@ class PipelineRunner:
         if self.progress_callback:
             self.progress_callback(stage, progress)
 
+    def _write_manifest(
+        self,
+        *,
+        input_path: Path,
+        work_dir: Path,
+        output_path: Path,
+        artifacts: dict[str, Path],
+    ) -> Path:
+        manifest_path = work_dir / "pipeline_manifest.json"
+        manifest = {
+            "schema_version": 1,
+            "created_at": utc_timestamp(),
+            "pipeline_name": self.config.name,
+            "input_path": str(input_path),
+            "work_dir": str(work_dir),
+            "output_path": str(output_path),
+            "target": asdict(self.config.target),
+            "stages": self.config.stages,
+            "artifacts": {name: str(path) for name, path in sorted(artifacts.items())},
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        return manifest_path
+
     def run(self, input_path: Path, work_dir: Path) -> PipelineResult:
         work_dir.mkdir(parents=True, exist_ok=True)
         artifacts: dict[str, Path] = {}
@@ -54,26 +78,32 @@ class PipelineRunner:
 
         self._progress("ingest", 10)
         current = IngestStage(self.config, self.command_log_path).run(input_path, work_dir)
+        artifacts["ingest_wav"] = current
 
         if self.config.enabled("noise_reduction"):
             self._progress("noise_reduction", 25)
             current = DeepFilterNetStage(self.config, self.command_log_path).run(current, work_dir)
+            artifacts["noise_reduced_wav"] = current
 
         if self.config.enabled("music_separation"):
             self._progress("music_separation", 35)
             current = DemucsStage(self.config, self.command_log_path).run(current, work_dir)
+            artifacts["separated_wav"] = current
 
         if self.config.enabled("silence_trim", default=True):
             self._progress("silence_trim", 50)
             current = SilenceTrimStage(self.config, self.command_log_path).run(current, work_dir)
+            artifacts["silence_trimmed_wav"] = current
 
         if self.config.enabled("filler_removal"):
             self._progress("filler_removal", 60)
             current = FillerRemovalStage(self.config, self.command_log_path).run(current, work_dir)
+            artifacts["filler_removed_audio"] = current
 
         if self.config.enabled("loudness", default=True):
             self._progress("loudness", 75)
             current = LoudnessStage(self.config, self.command_log_path).run(current, work_dir)
+            artifacts["loudness_normalized_audio"] = current
 
         if self.config.enabled("transcription"):
             self._progress("transcription", 88)
@@ -87,5 +117,12 @@ class PipelineRunner:
                 DiarizationStage(self.config, self.command_log_path).run(current, work_dir)
             )
 
+        artifacts["final_audio"] = current
+        artifacts["pipeline_manifest"] = self._write_manifest(
+            input_path=input_path,
+            work_dir=work_dir,
+            output_path=current,
+            artifacts=artifacts,
+        )
         self._progress("complete", 99)
         return PipelineResult(output_path=current, artifacts=artifacts)

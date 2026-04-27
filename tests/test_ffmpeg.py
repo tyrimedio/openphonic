@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from openphonic.pipeline.config import TargetFormat
+import pytest
+
+from openphonic.pipeline.config import PipelineConfig, TargetFormat
 from openphonic.pipeline.ffmpeg import (
     MediaValidationError,
     build_ffprobe_command,
@@ -10,6 +12,7 @@ from openphonic.pipeline.ffmpeg import (
     parse_loudnorm_json,
     parse_media_metadata,
 )
+from openphonic.pipeline.stages import IngestStage, StageError
 
 
 def test_build_ingest_command_sets_working_format() -> None:
@@ -123,3 +126,16 @@ def test_loudnorm_apply_command_uses_measured_values() -> None:
     filter_spec = command[command.index("-af") + 1]
     assert "measured_I=-19.11" in filter_spec
     assert "offset=0.02" in filter_spec
+
+
+def test_stage_fails_when_command_does_not_produce_artifact(tmp_path, monkeypatch) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+
+    def fake_run_command(*args, **kwargs) -> None:
+        _ = args, kwargs
+
+    monkeypatch.setattr("openphonic.pipeline.stages.run_command", fake_run_command)
+
+    with pytest.raises(StageError, match="Ingest stage did not produce expected artifact"):
+        IngestStage(config=PipelineConfig("test")).run(input_path, tmp_path)

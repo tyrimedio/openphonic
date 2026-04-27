@@ -24,6 +24,14 @@ class StageError(RuntimeError):
     """Raised when a pipeline stage cannot produce a valid artifact."""
 
 
+def require_artifact(path: Path, stage_name: str, *, allow_empty: bool = False) -> Path:
+    if not path.exists():
+        raise StageError(f"{stage_name} stage did not produce expected artifact: {path}")
+    if path.is_file() and not allow_empty and path.stat().st_size == 0:
+        raise StageError(f"{stage_name} stage produced an empty artifact: {path}")
+    return path
+
+
 class PipelineStage:
     def __init__(self, config: PipelineConfig, command_log_path: Path | None = None) -> None:
         self.config = config
@@ -37,7 +45,7 @@ class IngestStage(PipelineStage):
             build_ingest_command(input_path, output_path, self.config.target),
             log_path=self.command_log_path,
         )
-        return output_path
+        return require_artifact(output_path, "Ingest")
 
 
 class DeepFilterNetStage(PipelineStage):
@@ -66,7 +74,7 @@ class DeepFilterNetStage(PipelineStage):
             raise StageError("DeepFilterNet completed but produced no WAV output.")
         output_path = work_dir / "02_noise_reduced.wav"
         shutil.copy2(candidates[-1], output_path)
-        return output_path
+        return require_artifact(output_path, "DeepFilterNet")
 
 
 class DemucsStage(PipelineStage):
@@ -104,7 +112,7 @@ class DemucsStage(PipelineStage):
             raise StageError(f"Demucs output was not found at {candidate}.")
         output_path = work_dir / "03_separated.wav"
         shutil.copy2(candidate, output_path)
-        return output_path
+        return require_artifact(output_path, "Demucs")
 
 
 class SilenceTrimStage(PipelineStage):
@@ -121,7 +129,7 @@ class SilenceTrimStage(PipelineStage):
             ),
             log_path=self.command_log_path,
         )
-        return output_path
+        return require_artifact(output_path, "Silence trim")
 
 
 class FillerRemovalStage(PipelineStage):
@@ -166,7 +174,7 @@ class LoudnessStage(PipelineStage):
             ),
             log_path=self.command_log_path,
         )
-        return output_path
+        return require_artifact(output_path, "Loudness")
 
 
 class TranscriptionStage(PipelineStage):
@@ -203,9 +211,11 @@ class TranscriptionStage(PipelineStage):
         }
         json_path = work_dir / "transcript.json"
         json_path.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
+        require_artifact(json_path, "Transcription")
 
         vtt_path = work_dir / "transcript.vtt"
         vtt_path.write_text(_segments_to_vtt(transcript["segments"]), encoding="utf-8")
+        require_artifact(vtt_path, "Transcription")
         return {"transcript_json": json_path, "transcript_vtt": vtt_path}
 
 
@@ -231,6 +241,7 @@ class DiarizationStage(PipelineStage):
         rttm_path = work_dir / "diarization.rttm"
         with rttm_path.open("w", encoding="utf-8") as handle:
             diarization.write_rttm(handle)
+        require_artifact(rttm_path, "Diarization", allow_empty=True)
         return {"diarization_rttm": rttm_path}
 
 
