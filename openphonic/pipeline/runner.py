@@ -21,6 +21,10 @@ from openphonic.pipeline.stages import (
 
 ProgressCallback = Callable[[str, int], None]
 
+KNOWN_WORK_DIR_ARTIFACTS = {
+    "05_filler_removal_manifest.json": "filler_removal_manifest",
+}
+
 
 @dataclass
 class PipelineResult:
@@ -73,6 +77,19 @@ class PipelineRunner:
             }
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         return manifest_path
+
+    def _collect_work_dir_artifacts(self, work_dir: Path, artifacts: dict[str, Path]) -> None:
+        known_paths = {path.resolve() for path in artifacts.values() if path.exists()}
+        for path in sorted(work_dir.iterdir()):
+            if path.name == "pipeline_manifest.json" or not path.is_file():
+                continue
+            if path.resolve() in known_paths:
+                continue
+            artifact_name = KNOWN_WORK_DIR_ARTIFACTS.get(path.name)
+            if artifact_name is None:
+                continue
+            artifacts.setdefault(artifact_name, path)
+            known_paths.add(path.resolve())
 
     def run(self, input_path: Path, work_dir: Path) -> PipelineResult:
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -133,6 +150,7 @@ class PipelineRunner:
                     DiarizationStage(self.config, self.command_log_path).run(current, work_dir)
                 )
         except Exception as exc:
+            self._collect_work_dir_artifacts(work_dir, artifacts)
             self._write_manifest(
                 input_path=input_path,
                 work_dir=work_dir,

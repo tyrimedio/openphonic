@@ -6,6 +6,7 @@ import pytest
 from openphonic.pipeline.config import PipelineConfig
 from openphonic.pipeline.ffmpeg import AudioStreamMetadata, MediaMetadata
 from openphonic.pipeline.runner import PipelineRunner
+from openphonic.pipeline.stages import StageError
 
 
 class FakeIngestStage:
@@ -138,3 +139,50 @@ def test_runner_writes_failed_manifest_with_partial_artifacts(tmp_path, monkeypa
         "type": "RuntimeError",
         "message": "transcription unavailable",
     }
+
+
+def test_runner_preserves_artifacts_written_by_failing_stage(tmp_path, monkeypatch) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"not real audio")
+    work_dir = tmp_path / "work"
+
+    def fake_probe_media(path: Path, log_path: Path | None = None) -> MediaMetadata:
+        _ = log_path
+        return MediaMetadata(
+            path=path,
+            format_name="wav",
+            duration_seconds=1.0,
+            audio_streams=[
+                AudioStreamMetadata(
+                    index=0,
+                    codec_name="pcm_s16le",
+                    sample_rate=48000,
+                    channels=2,
+                    duration_seconds=1.0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr("openphonic.pipeline.runner.probe_media", fake_probe_media)
+    monkeypatch.setattr("openphonic.pipeline.runner.IngestStage", FakeIngestStage)
+
+    config = PipelineConfig(
+        name="test",
+        stages={
+            "silence_trim": {"enabled": False},
+            "filler_removal": {"enabled": True, "words": ["um"]},
+            "loudness": {"enabled": False},
+        },
+    )
+
+    with pytest.raises(StageError, match="Filler removal is configured"):
+        PipelineRunner(config).run(input_path, work_dir)
+
+    filler_manifest_path = work_dir / "05_filler_removal_manifest.json"
+    assert filler_manifest_path.exists()
+    manifest = json.loads((work_dir / "pipeline_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["artifacts"]["filler_removal_manifest"] == str(filler_manifest_path)
+    filler_manifest = json.loads(filler_manifest_path.read_text(encoding="utf-8"))
+    assert filler_manifest["status"] == "not_applied"
+    assert "review workflow" in filler_manifest["reason"]
