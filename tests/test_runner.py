@@ -94,6 +94,9 @@ def test_runner_writes_failed_manifest_with_partial_artifacts(tmp_path, monkeypa
     input_path = tmp_path / "input.wav"
     input_path.write_bytes(b"not real audio")
     work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    stale_filler_manifest = work_dir / "05_filler_removal_manifest.json"
+    stale_filler_manifest.write_text('{"status": "stale"}', encoding="utf-8")
 
     def fake_probe_media(path: Path, log_path: Path | None = None) -> MediaMetadata:
         _ = log_path
@@ -135,6 +138,7 @@ def test_runner_writes_failed_manifest_with_partial_artifacts(tmp_path, monkeypa
     assert manifest["output_path"] == str(work_dir / "01_ingest.wav")
     assert manifest["artifacts"]["media_metadata"] == str(work_dir / "00_media_metadata.json")
     assert manifest["artifacts"]["ingest_wav"] == str(work_dir / "01_ingest.wav")
+    assert "filler_removal_manifest" not in manifest["artifacts"]
     assert manifest["error"] == {
         "type": "RuntimeError",
         "message": "transcription unavailable",

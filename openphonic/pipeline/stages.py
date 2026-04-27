@@ -23,6 +23,10 @@ from openphonic.pipeline.ffmpeg import (
 class StageError(RuntimeError):
     """Raised when a pipeline stage cannot produce a valid artifact."""
 
+    def __init__(self, message: str, artifacts: dict[str, Path] | None = None) -> None:
+        super().__init__(message)
+        self.artifacts = artifacts or {}
+
 
 def require_artifact(path: Path, stage_name: str, *, allow_empty: bool = False) -> Path:
     if not path.exists():
@@ -150,8 +154,11 @@ class FillerRemovalStage(PipelineStage):
             encoding="utf-8",
         )
         raise StageError(
-            "Filler removal is configured but not available yet. "
-            "It requires word timestamps and a manual review workflow before cuts are safe."
+            (
+                "Filler removal is configured but not available yet. "
+                "It requires word timestamps and a manual review workflow before cuts are safe."
+            ),
+            artifacts={"filler_removal_manifest": manifest},
         )
 
 
