@@ -1,8 +1,12 @@
+import json
 from pathlib import Path
+
+import pytest
 
 from openphonic.pipeline.config import PipelineConfig
 from openphonic.pipeline.ffmpeg import AudioStreamMetadata, MediaMetadata
 from openphonic.pipeline.runner import PipelineRunner
+from openphonic.pipeline.stages import StageError
 
 
 class FakeIngestStage:
@@ -18,6 +22,15 @@ class FakeIngestStage:
         output_path = work_dir / "01_ingest.wav"
         output_path.write_bytes(b"audio")
         return output_path
+
+
+class FailingTranscriptionStage:
+    def __init__(self, config: PipelineConfig, command_log_path: Path | None = None) -> None:
+        _ = config, command_log_path
+
+    def run(self, input_path: Path, work_dir: Path) -> dict[str, Path]:
+        _ = input_path, work_dir
+        raise RuntimeError("transcription unavailable")
 
 
 def test_runner_validates_media_and_writes_metadata_artifact(tmp_path, monkeypatch) -> None:
@@ -63,6 +76,117 @@ def test_runner_validates_media_and_writes_metadata_artifact(tmp_path, monkeypat
 
     assert result.output_path.name == "01_ingest.wav"
     assert result.artifacts["media_metadata"].exists()
+    assert result.artifacts["ingest_wav"] == result.output_path
+    assert result.artifacts["final_audio"] == result.output_path
+    assert result.artifacts["pipeline_manifest"].exists()
     assert '"format_name": "wav"' in result.artifacts["media_metadata"].read_text()
+    manifest = json.loads(result.artifacts["pipeline_manifest"].read_text(encoding="utf-8"))
+    assert manifest["status"] == "succeeded"
+    assert manifest["pipeline_name"] == "test"
+    assert manifest["output_path"] == str(result.output_path)
+    assert manifest["artifacts"]["media_metadata"] == str(result.artifacts["media_metadata"])
+    assert manifest["artifacts"]["final_audio"] == str(result.output_path)
     assert progress[:2] == [("metadata", 8), ("ingest", 10)]
     assert FakeIngestStage.seen_command_log_path == command_log_path
+
+
+def test_runner_writes_failed_manifest_with_partial_artifacts(tmp_path, monkeypatch) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"not real audio")
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    stale_filler_manifest = work_dir / "05_filler_removal_manifest.json"
+    stale_filler_manifest.write_text('{"status": "stale"}', encoding="utf-8")
+
+    def fake_probe_media(path: Path, log_path: Path | None = None) -> MediaMetadata:
+        _ = log_path
+        return MediaMetadata(
+            path=path,
+            format_name="wav",
+            duration_seconds=1.0,
+            audio_streams=[
+                AudioStreamMetadata(
+                    index=0,
+                    codec_name="pcm_s16le",
+                    sample_rate=48000,
+                    channels=2,
+                    duration_seconds=1.0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr("openphonic.pipeline.runner.probe_media", fake_probe_media)
+    monkeypatch.setattr("openphonic.pipeline.runner.IngestStage", FakeIngestStage)
+    monkeypatch.setattr("openphonic.pipeline.runner.TranscriptionStage", FailingTranscriptionStage)
+
+    config = PipelineConfig(
+        name="test",
+        stages={
+            "silence_trim": {"enabled": False},
+            "loudness": {"enabled": False},
+            "transcription": {"enabled": True},
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="transcription unavailable"):
+        PipelineRunner(config).run(input_path, work_dir)
+
+    manifest_path = work_dir / "pipeline_manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["output_path"] == str(work_dir / "01_ingest.wav")
+    assert manifest["artifacts"]["media_metadata"] == str(work_dir / "00_media_metadata.json")
+    assert manifest["artifacts"]["ingest_wav"] == str(work_dir / "01_ingest.wav")
+    assert "filler_removal_manifest" not in manifest["artifacts"]
+    assert manifest["error"] == {
+        "type": "RuntimeError",
+        "message": "transcription unavailable",
+    }
+
+
+def test_runner_preserves_artifacts_written_by_failing_stage(tmp_path, monkeypatch) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"not real audio")
+    work_dir = tmp_path / "work"
+
+    def fake_probe_media(path: Path, log_path: Path | None = None) -> MediaMetadata:
+        _ = log_path
+        return MediaMetadata(
+            path=path,
+            format_name="wav",
+            duration_seconds=1.0,
+            audio_streams=[
+                AudioStreamMetadata(
+                    index=0,
+                    codec_name="pcm_s16le",
+                    sample_rate=48000,
+                    channels=2,
+                    duration_seconds=1.0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr("openphonic.pipeline.runner.probe_media", fake_probe_media)
+    monkeypatch.setattr("openphonic.pipeline.runner.IngestStage", FakeIngestStage)
+
+    config = PipelineConfig(
+        name="test",
+        stages={
+            "silence_trim": {"enabled": False},
+            "filler_removal": {"enabled": True, "words": ["um"]},
+            "loudness": {"enabled": False},
+        },
+    )
+
+    with pytest.raises(StageError, match="Filler removal is configured"):
+        PipelineRunner(config).run(input_path, work_dir)
+
+    filler_manifest_path = work_dir / "05_filler_removal_manifest.json"
+    assert filler_manifest_path.exists()
+    manifest = json.loads((work_dir / "pipeline_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["artifacts"]["filler_removal_manifest"] == str(filler_manifest_path)
+    filler_manifest = json.loads(filler_manifest_path.read_text(encoding="utf-8"))
+    assert filler_manifest["status"] == "not_applied"
+    assert "review workflow" in filler_manifest["reason"]
