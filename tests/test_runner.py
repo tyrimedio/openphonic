@@ -6,7 +6,7 @@ import pytest
 from openphonic.pipeline.config import PipelineConfig
 from openphonic.pipeline.ffmpeg import AudioStreamMetadata, MediaMetadata
 from openphonic.pipeline.runner import PipelineRunner
-from openphonic.pipeline.stages import StageError
+from openphonic.pipeline.stages import FillerRemovalStage, StageError
 
 
 class FakeIngestStage:
@@ -308,6 +308,85 @@ def test_runner_writes_cut_suggestions_from_current_transcript(tmp_path, monkeyp
             "reason": "Matched configured filler word.",
             "confidence": 0.89,
         },
+    ]
+
+
+def test_cut_suggestions_do_not_span_wordless_segments(tmp_path) -> None:
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "segments": [
+                    {
+                        "id": 1,
+                        "start": 0.0,
+                        "end": 1.0,
+                        "text": "hello",
+                        "words": [
+                            {
+                                "start": 0.2,
+                                "end": 1.0,
+                                "word": "hello",
+                                "probability": 0.95,
+                            }
+                        ],
+                    },
+                    {
+                        "id": 2,
+                        "start": 1.2,
+                        "end": 2.0,
+                        "text": "spoken words without timestamps",
+                        "words": [],
+                    },
+                    {
+                        "id": 3,
+                        "start": 3.0,
+                        "end": 3.5,
+                        "text": "again",
+                        "words": [
+                            {
+                                "start": 3.0,
+                                "end": 3.5,
+                                "word": "again",
+                                "probability": 0.96,
+                            }
+                        ],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = PipelineConfig(
+        name="test",
+        stages={
+            "filler_removal": {
+                "enabled": True,
+                "words": ["um"],
+                "min_silence_seconds": 0.5,
+            }
+        },
+    )
+
+    artifacts = FillerRemovalStage(config).run(transcript_path, tmp_path)
+
+    assert artifacts["cut_suggestions"] == tmp_path / "cut_suggestions.json"
+    suggestions = json.loads((tmp_path / "cut_suggestions.json").read_text(encoding="utf-8"))
+    assert suggestions["suggestions"] == [
+        {
+            "id": "cut-0001",
+            "type": "silence",
+            "start": 2.0,
+            "end": 3.0,
+            "duration": 1.0,
+            "source": "segment_gap",
+            "before_segment_index": 1,
+            "before_word_index": None,
+            "after_segment_index": 2,
+            "after_word_index": None,
+            "reason": "Detected a timestamp gap longer than the configured threshold.",
+        }
     ]
 
 

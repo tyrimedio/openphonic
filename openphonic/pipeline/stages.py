@@ -441,8 +441,13 @@ def _build_cut_suggestions(
             suggestion["confidence"] = word["probability"]
         suggestions.append(suggestion)
 
-    timing_units = words or _transcript_segments_for_timing(transcript)
-    timing_source = "word_gap" if words else "segment_gap"
+    timed_segments = _transcript_segments_for_timing(transcript)
+    word_segment_indexes = {word["segment_index"] for word in words}
+    has_partial_word_timestamps = bool(words) and any(
+        segment["segment_index"] not in word_segment_indexes for segment in timed_segments
+    )
+    timing_units = words if words and not has_partial_word_timestamps else timed_segments
+    timing_source = "word_gap" if timing_units is words else "segment_gap"
     for before, after in zip(timing_units, timing_units[1:], strict=False):
         start = before["end"]
         end = after["start"]
