@@ -119,6 +119,20 @@ def artifact_version(path: Path) -> str:
 
 def test_index_route_renders(tmp_path, monkeypatch) -> None:
     configure_tmp_settings(tmp_path, monkeypatch)
+    preset_dir = get_settings().preset_dir
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily-show.yml").write_text(
+        """
+preset:
+  label: Daily show
+  description: Daily show production preset.
+name: daily-show
+stages:
+  loudness:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
 
     with TestClient(create_app()) as client:
         response = client.get("/")
@@ -128,6 +142,8 @@ def test_index_route_renders(tmp_path, monkeypatch) -> None:
     assert 'value="podcast-default"' in response.text
     assert 'value="speech-cleanup"' in response.text
     assert 'value="vocal-isolation"' in response.text
+    assert 'value="custom:daily-show"' in response.text
+    assert "Daily show" in response.text
 
 
 def test_create_job_rejects_unknown_preset(tmp_path, monkeypatch) -> None:
@@ -142,6 +158,47 @@ def test_create_job_rejects_unknown_preset(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Unknown pipeline preset: missing"
+
+
+def test_create_job_rejects_malformed_custom_preset(tmp_path, monkeypatch) -> None:
+    configure_tmp_settings(tmp_path, monkeypatch)
+    preset_dir = get_settings().preset_dir
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "broken.yml").write_text("name: [broken\n", encoding="utf-8")
+    (preset_dir / "scalar-stage.yml").write_text(
+        """
+name: scalar-stage
+stages:
+  loudness: true
+""",
+        encoding="utf-8",
+    )
+    started: list[str] = []
+
+    def fake_run_job(job_id: str) -> None:
+        started.append(job_id)
+
+    monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs",
+            data={"preset": "custom:broken"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+            follow_redirects=False,
+        )
+        scalar_response = client.post(
+            "/jobs",
+            data={"preset": "custom:scalar-stage"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown pipeline preset: custom:broken"
+    assert scalar_response.status_code == 400
+    assert scalar_response.json()["detail"] == "Unknown pipeline preset: custom:scalar-stage"
+    assert started == []
 
 
 def test_create_job_stores_selected_preset(tmp_path, monkeypatch) -> None:
@@ -168,6 +225,47 @@ def test_create_job_stores_selected_preset(tmp_path, monkeypatch) -> None:
     assert record.to_dict()["config"] == {
         "preset": "speech-cleanup",
         "preset_label": "Speech cleanup",
+    }
+    assert started == [job_id]
+
+
+def test_create_job_stores_custom_preset(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    preset_dir = get_settings().preset_dir
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily-show.yml").write_text(
+        """
+preset:
+  label: Daily show
+name: daily-show
+stages:
+  loudness:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    started: list[str] = []
+
+    def fake_run_job(job_id: str) -> None:
+        started.append(job_id)
+
+    monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs",
+            data={"preset": "custom:daily-show"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    job_id = response.headers["location"].removeprefix("/jobs/")
+    record = get_job(db_path, job_id)
+    assert record is not None
+    assert record.to_dict()["config"] == {
+        "preset": "custom:daily-show",
+        "preset_label": "Daily show",
     }
     assert started == [job_id]
 

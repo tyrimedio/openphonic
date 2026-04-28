@@ -28,6 +28,7 @@ class Settings:
     data_dir: Path
     database_path: Path
     pipeline_config: Path
+    preset_dir: Path
     max_upload_mb: int
     public_base_url: str
     hf_token: str | None
@@ -55,6 +56,7 @@ def get_settings() -> Settings:
         data_dir=data_dir,
         database_path=_env_path("OPENPHONIC_DATABASE_PATH", data_dir / "openphonic.sqlite3"),
         pipeline_config=_env_path("OPENPHONIC_PIPELINE_CONFIG", DEFAULT_PIPELINE_CONFIG),
+        preset_dir=_env_path("OPENPHONIC_PRESET_DIR", data_dir / "presets"),
         max_upload_mb=_env_int("OPENPHONIC_MAX_UPLOAD_MB", 1024),
         public_base_url=os.getenv("OPENPHONIC_PUBLIC_BASE_URL", "http://127.0.0.1:8000"),
         hf_token=os.getenv("HF_TOKEN") or None,

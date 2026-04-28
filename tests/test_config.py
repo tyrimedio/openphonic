@@ -52,6 +52,83 @@ def test_builtin_presets_load_conservative_audio_polish_configs() -> None:
     assert vocal_isolation.enabled("noise_reduction") is False
 
 
+def test_custom_presets_are_discovered_and_loaded(tmp_path) -> None:
+    preset_dir = tmp_path / "presets"
+    preset_dir.mkdir()
+    (preset_dir / "daily-show.yml").write_text(
+        """
+preset:
+  label: Daily show
+  description: Daily show production preset.
+name: daily-show
+target:
+  sample_rate: 48000
+  channels: 2
+stages:
+  silence_trim:
+    enabled: false
+  loudness:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    (preset_dir / "ignored preset.yml").write_text("name: ignored\n", encoding="utf-8")
+    (preset_dir / "broken.yml").write_text("name: [broken\n", encoding="utf-8")
+    (preset_dir / "bad-target.yml").write_text(
+        """
+name: bad-target
+target:
+  unsupported: true
+""",
+        encoding="utf-8",
+    )
+    (preset_dir / "scalar-stage.yml").write_text(
+        """
+name: scalar-stage
+stages:
+  loudness: true
+""",
+        encoding="utf-8",
+    )
+
+    presets = available_presets(DEFAULT_PIPELINE_CONFIG, preset_dir)
+    custom = preset_by_id(
+        "custom:daily-show",
+        default_path=DEFAULT_PIPELINE_CONFIG,
+        preset_dir=preset_dir,
+    )
+    config = load_pipeline_config_for_preset(
+        "custom:daily-show",
+        default_path=DEFAULT_PIPELINE_CONFIG,
+        preset_dir=preset_dir,
+    )
+
+    assert [preset.id for preset in presets] == [
+        "podcast-default",
+        "speech-cleanup",
+        "vocal-isolation",
+        "custom:daily-show",
+    ]
+    assert custom.label == "Daily show"
+    assert custom.description == "Daily show production preset."
+    assert custom.path == preset_dir / "daily-show.yml"
+    assert config.name == "daily-show"
+    assert config.enabled("silence_trim", default=True) is False
+    assert config.enabled("loudness") is True
+    with pytest.raises(ValueError, match="Unknown pipeline preset"):
+        preset_by_id(
+            "custom:broken",
+            default_path=DEFAULT_PIPELINE_CONFIG,
+            preset_dir=preset_dir,
+        )
+    with pytest.raises(ValueError, match="Unknown pipeline preset"):
+        preset_by_id(
+            "custom:scalar-stage",
+            default_path=DEFAULT_PIPELINE_CONFIG,
+            preset_dir=preset_dir,
+        )
+
+
 def test_unknown_preset_is_rejected() -> None:
     with pytest.raises(ValueError, match="Unknown pipeline preset"):
         preset_by_id("missing", default_path=DEFAULT_PIPELINE_CONFIG)
