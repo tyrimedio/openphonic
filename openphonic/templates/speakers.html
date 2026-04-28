@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Speakers - {{ job.original_filename }} - Openphonic</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell reading">
+      <header class="topbar">
+        <div>
+          <a href="/jobs/{{ job.id }}">Back to job</a>
+          <h1>Speakers</h1>
+          <p>{{ job.original_filename }}</p>
+        </div>
+        <a class="button secondary" href="{{ download_url }}">Download JSON</a>
+      </header>
+
+      <section class="panel">
+        <div class="metric-grid">
+          <div>
+            <span>Speakers</span>
+            <strong>{{ speakers|length }}</strong>
+          </div>
+          <div>
+            <span>Turns</span>
+            <strong>{{ turns|length }}</strong>
+          </div>
+          <div>
+            <span>Corrected</span>
+            <strong>{{ correction_count }}</strong>
+          </div>
+          <div>
+            <span>Engine</span>
+            <strong>{{ diarization.engine or "-" }}</strong>
+          </div>
+          <div>
+            <span>Model</span>
+            <strong>{{ diarization.model or "-" }}</strong>
+          </div>
+          <div>
+            <span>Artifact</span>
+            <strong>{{ artifact_name }}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="actions">
+        <a class="button secondary" href="{{ download_url }}">Diarization JSON</a>
+        {% if rttm_url %}
+          <a class="button secondary" href="{{ rttm_url }}">Diarization RTTM</a>
+        {% endif %}
+        {% if corrections_url %}
+          <a class="button secondary" href="{{ corrections_url }}">Speaker Corrections JSON</a>
+        {% endif %}
+        <a class="button secondary" href="{{ edit_url }}">Edit speakers</a>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Speakers</h2>
+          <span>{{ correction_count }} corrected</span>
+        </div>
+        {% if speakers %}
+          <table class="speaker-table">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Label</th>
+                <th>Turns</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for speaker in speakers %}
+                <tr>
+                  <td class="mono">{{ speaker.speaker }}</td>
+                  <td>
+                    {{ speaker.label }}
+                    {% if speaker.label != speaker.speaker %}
+                      <span class="status corrected">corrected</span>
+                    {% endif %}
+                  </td>
+                  <td>{{ speaker.turn_count }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="empty">No speakers found.</p>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Turns</h2>
+          <span>{{ turns|length }} items</span>
+        </div>
+        {% if turns %}
+          <table class="turn-table">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Speaker</th>
+                <th>Source</th>
+                <th>Track</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for turn in turns %}
+                <tr>
+                  <td class="mono">{{ turn.start }} - {{ turn.end }}</td>
+                  <td>{{ turn.label }}</td>
+                  <td class="mono">{{ turn.speaker }}</td>
+                  <td>{{ turn.track or "-" }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="empty">No diarization turns.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>
