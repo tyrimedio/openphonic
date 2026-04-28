@@ -1,0 +1,47 @@
+name: speech-cleanup
+target:
+  sample_rate: 48000
+  channels: 2
+  codec: aac
+  container: m4a
+  bitrate: 160k
+
+stages:
+  ingest:
+    enabled: true
+  noise_reduction:
+    enabled: true
+    engine: deepfilternet
+    attenuation_db: 8
+  music_separation:
+    enabled: false
+    engine: demucs
+    model: htdemucs
+    stem: vocals
+  silence_trim:
+    enabled: true
+    start_threshold_db: -50
+    stop_threshold_db: -50
+    min_silence_seconds: 0.35
+  loudness:
+    enabled: true
+    integrated_lufs: -16
+    true_peak_db: -1.5
+    loudness_range_lu: 11
+  transcription:
+    enabled: false
+    engine: faster-whisper
+    model: small
+    language: null
+  diarization:
+    enabled: false
+    engine: pyannote
+    model: pyannote/speaker-diarization-3.1
+  filler_removal:
+    enabled: false
+    min_silence_seconds: 0.75
+    words:
+      - um
+      - uh
+      - erm
+      - ah

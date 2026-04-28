@@ -25,7 +25,9 @@
           <label>
             Preset
             <select name="preset">
-              <option value="podcast-default">Podcast default</option>
+              {% for preset in presets %}
+                <option value="{{ preset.id }}" title="{{ preset.description }}">{{ preset.label }}</option>
+              {% endfor %}
             </select>
           </label>
           <button class="button" type="submit">Start processing</button>

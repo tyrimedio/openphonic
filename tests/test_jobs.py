@@ -14,10 +14,11 @@ from openphonic.services.storage import job_dir
 
 class SuccessfulRunner:
     seen_command_log_path: Path | None = None
+    seen_config = None
 
     def __init__(self, config, progress_callback=None, command_log_path=None) -> None:
-        _ = config
         self.progress_callback = progress_callback
+        SuccessfulRunner.seen_config = config
         SuccessfulRunner.seen_command_log_path = command_log_path
 
     def run(self, input_path: Path, work_dir: Path) -> PipelineResult:
@@ -71,6 +72,27 @@ def test_run_job_records_success_and_durable_events(tmp_path, monkeypatch) -> No
     assert record.transcript_path is not None
     assert SuccessfulRunner.seen_command_log_path == tmp_path / "data/jobs/job-1/commands.jsonl"
     assert (tmp_path / "data/jobs/job-1/job-events.jsonl").exists()
+
+
+def test_run_job_uses_selected_pipeline_preset(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(
+        db_path,
+        job_id="job-1",
+        original_filename="input.wav",
+        input_path=input_path,
+        config={"preset": "speech-cleanup"},
+    )
+    monkeypatch.setattr("openphonic.services.jobs.PipelineRunner", SuccessfulRunner)
+
+    run_job("job-1")
+
+    assert SuccessfulRunner.seen_config is not None
+    assert SuccessfulRunner.seen_config.name == "speech-cleanup"
+    assert SuccessfulRunner.seen_config.enabled("noise_reduction") is True
+    assert SuccessfulRunner.seen_config.enabled("music_separation") is False
 
 
 def test_run_job_records_failure_without_traceback_printing(tmp_path, monkeypatch) -> None:
