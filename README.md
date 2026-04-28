@@ -65,7 +65,8 @@ The default preset lives in [config/default.yml](config/default.yml). It runs:
 5. Optional silence trimming
 6. FFmpeg two-pass loudness normalization
 7. Optional faster-whisper transcription
-8. Optional pyannote diarization
+8. Optional non-destructive cut suggestions from transcript timestamps
+9. Optional pyannote diarization
 
 The optional ML stages are disabled by default because their install/runtime requirements differ by machine.
 
@@ -76,6 +77,9 @@ pip install -e ".[ml]"
 ```
 
 Transcription uses `faster-whisper` and stores `transcript.json` plus `transcript.vtt`.
+When `stages.filler_removal.enabled` is true, Openphonic writes
+`cut_suggestions.json` from transcript word and timing gaps, but does not apply
+cuts. Manual review is required before destructive edits are safe.
 Diarization uses `pyannote.audio`, requires `HF_TOKEN` for common pretrained Hugging
 Face pipelines such as `pyannote/speaker-diarization-3.1`, and stores both
 `diarization.rttm` and `diarization.json`. Check the selected model license and

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import string
 import subprocess
 import sys
 from pathlib import Path
@@ -137,29 +138,71 @@ class SilenceTrimStage(PipelineStage):
 
 
 class FillerRemovalStage(PipelineStage):
-    def run(self, input_path: Path, work_dir: Path) -> Path:
-        manifest = work_dir / "05_filler_removal_manifest.json"
-        manifest.write_text(
-            json.dumps(
-                {
-                    "status": "not_applied",
-                    "reason": (
-                        "Filler removal needs word timestamps and a review workflow "
-                        "before cuts are safe."
-                    ),
-                    "configured_words": self.config.stage("filler_removal").get("words", []),
-                },
-                indent=2,
-            ),
-            encoding="utf-8",
+    def run(self, transcript_path: Path | None, work_dir: Path) -> dict[str, Path]:
+        stage = self.config.stage("filler_removal")
+        artifact_path = work_dir / "cut_suggestions.json"
+        configured_words = _configured_filler_words(stage)
+        min_silence_seconds = _positive_float(stage.get("min_silence_seconds"), 0.75)
+
+        if transcript_path is None or not transcript_path.exists():
+            _write_cut_suggestions(
+                artifact_path,
+                source_artifact=None,
+                configured_words=configured_words,
+                min_silence_seconds=min_silence_seconds,
+                suggestions=[],
+                status="not_available",
+                reason="Transcript word timestamps are required before cuts can be suggested.",
+            )
+            raise StageError(
+                (
+                    "Filler removal is configured but no transcript artifact was produced. "
+                    "Enable stages.transcription before stages.filler_removal."
+                ),
+                artifacts={"cut_suggestions": artifact_path},
+            )
+
+        try:
+            transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            _write_cut_suggestions(
+                artifact_path,
+                source_artifact=transcript_path.name,
+                configured_words=configured_words,
+                min_silence_seconds=min_silence_seconds,
+                suggestions=[],
+                status="not_available",
+                reason="Transcript artifact is invalid JSON.",
+            )
+            raise StageError("Transcript artifact is invalid JSON.") from exc
+        if not isinstance(transcript, dict):
+            _write_cut_suggestions(
+                artifact_path,
+                source_artifact=transcript_path.name,
+                configured_words=configured_words,
+                min_silence_seconds=min_silence_seconds,
+                suggestions=[],
+                status="not_available",
+                reason="Transcript artifact must be a JSON object.",
+            )
+            raise StageError("Transcript artifact must be a JSON object.")
+
+        suggestions = _build_cut_suggestions(
+            transcript,
+            filler_words=configured_words,
+            min_silence_seconds=min_silence_seconds,
         )
-        raise StageError(
-            (
-                "Filler removal is configured but not available yet. "
-                "It requires word timestamps and a manual review workflow before cuts are safe."
-            ),
-            artifacts={"filler_removal_manifest": manifest},
+        _write_cut_suggestions(
+            artifact_path,
+            source_artifact=transcript_path.name,
+            configured_words=configured_words,
+            min_silence_seconds=min_silence_seconds,
+            suggestions=suggestions,
+            status="not_applied",
+            reason="Suggestions only; manual review is required before any cuts are applied.",
         )
+        require_artifact(artifact_path, "Filler suggestion")
+        return {"cut_suggestions": artifact_path}
 
 
 class LoudnessStage(PipelineStage):
@@ -276,6 +319,194 @@ def _timestamp(seconds: float) -> str:
     minutes, milliseconds = divmod(milliseconds, 60_000)
     seconds_value, milliseconds = divmod(milliseconds, 1000)
     return f"{hours:02}:{minutes:02}:{seconds_value:02}.{milliseconds:03}"
+
+
+def _positive_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed <= 0:
+        return default
+    return parsed
+
+
+def _normalize_word(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().strip(string.punctuation).lower()
+
+
+def _configured_filler_words(stage: dict[str, Any]) -> list[str]:
+    raw_words = stage.get("words", ["um", "uh", "erm", "ah"])
+    if raw_words is None:
+        raw_words = []
+    if isinstance(raw_words, str):
+        raw_words = [raw_words]
+    elif not isinstance(raw_words, list | tuple | set):
+        raw_words = []
+    words: list[str] = []
+    seen: set[str] = set()
+    for word in raw_words:
+        normalized = _normalize_word(word)
+        if normalized and normalized not in seen:
+            words.append(normalized)
+            seen.add(normalized)
+    return words
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _round_seconds(value: float) -> float:
+    return round(value, 3)
+
+
+def _transcript_words(transcript: dict[str, Any]) -> list[dict[str, Any]]:
+    words: list[dict[str, Any]] = []
+    for segment_index, segment in enumerate(transcript.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        for word_index, word in enumerate(segment.get("words") or []):
+            if not isinstance(word, dict):
+                continue
+            start = _optional_float(word.get("start"))
+            end = _optional_float(word.get("end"))
+            if start is None or end is None or end < start:
+                continue
+            text = str(word.get("word") or "").strip()
+            words.append(
+                {
+                    "segment_index": segment_index,
+                    "word_index": word_index,
+                    "start": start,
+                    "end": end,
+                    "text": text,
+                    "normalized_text": _normalize_word(text),
+                    "probability": _optional_float(word.get("probability")),
+                }
+            )
+    return sorted(words, key=lambda word: (word["start"], word["end"]))
+
+
+def _transcript_segments_for_timing(transcript: dict[str, Any]) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for segment_index, segment in enumerate(transcript.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        start = _optional_float(segment.get("start"))
+        end = _optional_float(segment.get("end"))
+        if start is None or end is None or end < start:
+            continue
+        segments.append(
+            {
+                "segment_index": segment_index,
+                "word_index": None,
+                "start": start,
+                "end": end,
+            }
+        )
+    return sorted(segments, key=lambda segment: (segment["start"], segment["end"]))
+
+
+def _build_cut_suggestions(
+    transcript: dict[str, Any],
+    *,
+    filler_words: list[str],
+    min_silence_seconds: float,
+) -> list[dict[str, Any]]:
+    suggestions: list[dict[str, Any]] = []
+    words = _transcript_words(transcript)
+    filler_word_set = set(filler_words)
+
+    for word in words:
+        if word["normalized_text"] not in filler_word_set:
+            continue
+        suggestion = {
+            "type": "filler_word",
+            "start": _round_seconds(word["start"]),
+            "end": _round_seconds(word["end"]),
+            "duration": _round_seconds(word["end"] - word["start"]),
+            "text": word["text"],
+            "normalized_text": word["normalized_text"],
+            "segment_index": word["segment_index"],
+            "word_index": word["word_index"],
+            "reason": "Matched configured filler word.",
+        }
+        if word["probability"] is not None:
+            suggestion["confidence"] = word["probability"]
+        suggestions.append(suggestion)
+
+    timing_units = words or _transcript_segments_for_timing(transcript)
+    timing_source = "word_gap" if words else "segment_gap"
+    for before, after in zip(timing_units, timing_units[1:], strict=False):
+        start = before["end"]
+        end = after["start"]
+        duration = end - start
+        if duration < min_silence_seconds:
+            continue
+        suggestions.append(
+            {
+                "type": "silence",
+                "start": _round_seconds(start),
+                "end": _round_seconds(end),
+                "duration": _round_seconds(duration),
+                "source": timing_source,
+                "before_segment_index": before["segment_index"],
+                "before_word_index": before["word_index"],
+                "after_segment_index": after["segment_index"],
+                "after_word_index": after["word_index"],
+                "reason": "Detected a timestamp gap longer than the configured threshold.",
+            }
+        )
+
+    suggestions = sorted(
+        suggestions,
+        key=lambda suggestion: (
+            suggestion["start"],
+            suggestion["end"],
+            suggestion["type"],
+        ),
+    )
+    return [
+        {
+            "id": f"cut-{index:04d}",
+            **suggestion,
+        }
+        for index, suggestion in enumerate(suggestions, start=1)
+    ]
+
+
+def _write_cut_suggestions(
+    artifact_path: Path,
+    *,
+    source_artifact: str | None,
+    configured_words: list[str],
+    min_silence_seconds: float,
+    suggestions: list[dict[str, Any]],
+    status: str,
+    reason: str,
+) -> None:
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": status,
+                "reason": reason,
+                "source_artifact": source_artifact,
+                "configured_words": configured_words,
+                "min_silence_seconds": min_silence_seconds,
+                "suggestion_count": len(suggestions),
+                "suggestions": suggestions,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
 
 def _word_to_dict(word: Any) -> dict[str, Any]:
