@@ -60,6 +60,7 @@ MAX_CORRECTION_FORM_BYTES = 1024 * 1024
 MAX_CORRECTION_FIELDS = 10_000
 MAX_CUT_REVIEW_FORM_BYTES = 8 * 1024 * 1024
 MAX_CUT_REVIEW_FORM_FIELDS = 200_000
+MAX_CUT_REVIEW_ARTIFACT_BYTES = MAX_CUT_REVIEW_FORM_BYTES
 CUT_REVIEW_FORM_STATIC_FIELDS = 2
 CUT_REVIEW_FORM_FIELDS_PER_SUGGESTION = 3
 CUT_REVIEW_FORM_BYTES_PER_SUGGESTION = 256
@@ -929,7 +930,7 @@ async def save_cut_review(request: Request, job_id: str):
     )
     review = _build_cut_review(suggestions, CUT_SUGGESTIONS_ARTIFACT, form)
     serialized = json.dumps(review, indent=2)
-    if len(serialized.encode("utf-8")) > MAX_CORRECTION_FORM_BYTES:
+    if len(serialized.encode("utf-8")) > MAX_CUT_REVIEW_ARTIFACT_BYTES:
         raise HTTPException(status_code=413, detail="Cut review artifact is too large.")
     _corrections_path(job_id, CUT_REVIEW_ARTIFACT).write_text(serialized, encoding="utf-8")
     return RedirectResponse(f"/jobs/{job_id}/cuts", status_code=303)

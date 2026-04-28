@@ -717,6 +717,41 @@ def test_cut_review_allows_large_suggestion_forms(tmp_path, monkeypatch) -> None
     ]
 
 
+def test_cut_review_allows_large_decided_review_artifacts(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    suggestion_count = 7_000
+    write_many_cut_suggestions(work_dir, suggestion_count)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    form = {
+        "suggestions_version": artifact_version(work_dir / "cut_suggestions.json"),
+        "review_version": "missing",
+    }
+    for index in range(suggestion_count):
+        form[f"suggestion_{index}_id"] = f"cut-{index:04d}"
+        form[f"suggestion_{index}_decision"] = "approved"
+        form[f"suggestion_{index}_note"] = ""
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/cuts/review",
+            data=form,
+            follow_redirects=False,
+        )
+
+    review = json.loads((work_dir / "cut_review.json").read_text(encoding="utf-8"))
+    assert response.status_code == 303
+    assert response.headers["location"] == "/jobs/job-1/cuts"
+    assert len(review["decisions"]) == suggestion_count
+    assert review["decisions"][0]["suggestion_id"] == "cut-0000"
+    assert review["decisions"][-1]["suggestion_id"] == "cut-6999"
+    assert len(json.dumps(review, indent=2).encode("utf-8")) > 1024 * 1024
+
+
 def test_cut_review_rejects_stale_suggestions(tmp_path, monkeypatch) -> None:
     db_path = configure_tmp_settings(tmp_path, monkeypatch)
     input_path = tmp_path / "input.wav"
