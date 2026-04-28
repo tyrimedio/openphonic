@@ -97,7 +97,8 @@ label {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: 42px;
   border: 1px solid var(--line);
@@ -106,6 +107,10 @@ select {
   color: var(--text);
   padding: 8px 10px;
   font: inherit;
+}
+
+textarea {
+  resize: vertical;
 }
 
 .button {
@@ -189,6 +194,13 @@ tr:last-child td {
 .status.failed {
   background: #fae7e7;
   color: var(--danger);
+}
+
+.status.corrected {
+  margin-left: 8px;
+  background: #e5f3f2;
+  color: var(--accent-strong);
+  vertical-align: middle;
 }
 
 .meter {
@@ -290,6 +302,16 @@ dd {
   gap: 18px;
 }
 
+.edit-list {
+  display: grid;
+  gap: 14px;
+}
+
+.edit-segment {
+  align-items: start;
+  grid-template-columns: 160px minmax(0, 1fr);
+}
+
 .segment {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr);
@@ -384,6 +406,10 @@ dd {
 
   .word-list {
     grid-column: 1;
+  }
+
+  .edit-segment {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Edit Transcript - {{ job.original_filename }} - Openphonic</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell reading">
+      <header class="topbar">
+        <div>
+          <a href="/jobs/{{ job.id }}/transcript">Back to transcript</a>
+          <h1>Edit Transcript</h1>
+          <p>{{ job.original_filename }}</p>
+        </div>
+      </header>
+
+      <form action="{{ save_url }}" method="post">
+        <section class="panel">
+          <div class="section-heading">
+            <h2>Segments</h2>
+            <span class="mono">{{ artifact_name }}</span>
+          </div>
+          {% if segments %}
+            <div class="edit-list">
+              {% for segment in segments %}
+                <label class="edit-segment">
+                  <span class="segment-time mono">{{ segment.start }} - {{ segment.end }}</span>
+                  <textarea name="segment_{{ segment.index }}_text" rows="3">{{ segment.text }}</textarea>
+                </label>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="empty">No transcript segments.</p>
+          {% endif %}
+        </section>
+
+        <section class="actions">
+          <button class="button" type="submit">Save corrections</button>
+          <a class="button secondary" href="/jobs/{{ job.id }}/transcript">Cancel</a>
+        </section>
+      </form>
+    </main>
+  </body>
+</html>
