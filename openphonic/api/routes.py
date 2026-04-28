@@ -11,6 +11,13 @@ from fastapi.templating import Jinja2Templates
 
 from openphonic.core.database import create_job, init_db
 from openphonic.core.settings import get_settings
+from openphonic.pipeline.config import PipelineConfig, TargetFormat
+from openphonic.services.cuts import (
+    CUT_APPLY_MANIFEST_ARTIFACT,
+    CutApplyError,
+    apply_approved_cuts,
+    approved_cuts_from_review,
+)
 from openphonic.services.jobs import (
     JobRetryError,
     fetch_job,
@@ -295,6 +302,44 @@ def _load_cut_suggestions(job_id: str) -> dict[str, Any]:
 
 def _load_cut_review(job_id: str) -> dict[str, Any] | None:
     return _load_optional_json_artifact(job_id, CUT_REVIEW_ARTIFACT, "Cut review")
+
+
+def _load_cut_apply_manifest(job_id: str) -> dict[str, Any] | None:
+    return _load_optional_json_artifact(job_id, CUT_APPLY_MANIFEST_ARTIFACT, "Cut apply")
+
+
+def _cut_apply_output_url(job_id: str, manifest: dict[str, Any] | None) -> str | None:
+    if manifest is None or manifest.get("status") != "succeeded":
+        return None
+    if manifest.get("suggestions_version") != _artifact_version(job_id, CUT_SUGGESTIONS_ARTIFACT):
+        return None
+    if manifest.get("review_version") != _artifact_version(job_id, CUT_REVIEW_ARTIFACT):
+        return None
+    output_artifact = manifest.get("output_artifact")
+    if not isinstance(output_artifact, str):
+        return None
+    try:
+        job_artifact_path(get_settings(), job_id, output_artifact)
+    except (ValueError, FileNotFoundError):
+        return None
+    return _artifact_url(job_id, output_artifact)
+
+
+def _job_target_format(job_id: str) -> TargetFormat:
+    manifest = _load_optional_json_artifact(job_id, "pipeline_manifest.json", "Pipeline manifest")
+    if manifest is not None:
+        target = manifest.get("target")
+        if isinstance(target, dict):
+            fields = {
+                key: target[key]
+                for key in ("sample_rate", "channels", "codec", "container", "bitrate")
+                if key in target
+            }
+            try:
+                return TargetFormat(**fields)
+            except (TypeError, ValueError):
+                pass
+    return PipelineConfig.from_path(get_settings().pipeline_config).target
 
 
 def _correction_text_by_index(corrections: dict[str, Any] | None) -> dict[int, str]:
@@ -879,6 +924,7 @@ def cut_review_page(request: Request, job_id: str):
     record = _require_job(job_id)
     suggestions = _load_cut_suggestions(job_id)
     review = _load_cut_review(job_id)
+    apply_manifest = _load_cut_apply_manifest(job_id)
     rows = _cut_suggestion_rows(suggestions, review)
     approved_count = sum(1 for row in rows if row["decision"] == "approved")
     rejected_count = sum(1 for row in rows if row["decision"] == "rejected")
@@ -897,9 +943,15 @@ def cut_review_page(request: Request, job_id: str):
             "review_url": _artifact_url(job_id, CUT_REVIEW_ARTIFACT)
             if review is not None
             else None,
+            "apply_manifest": apply_manifest,
+            "apply_manifest_url": _artifact_url(job_id, CUT_APPLY_MANIFEST_ARTIFACT)
+            if apply_manifest is not None
+            else None,
+            "reviewed_output_url": _cut_apply_output_url(job_id, apply_manifest),
             "review_version": _artifact_version(job_id, CUT_REVIEW_ARTIFACT),
             "suggestions_version": _artifact_version(job_id, CUT_SUGGESTIONS_ARTIFACT),
             "save_url": f"/jobs/{job_id}/cuts/review",
+            "apply_url": f"/jobs/{job_id}/cuts/apply",
         },
     )
 
@@ -933,6 +985,67 @@ async def save_cut_review(request: Request, job_id: str):
     if len(serialized.encode("utf-8")) > MAX_CUT_REVIEW_ARTIFACT_BYTES:
         raise HTTPException(status_code=413, detail="Cut review artifact is too large.")
     _corrections_path(job_id, CUT_REVIEW_ARTIFACT).write_text(serialized, encoding="utf-8")
+    return RedirectResponse(f"/jobs/{job_id}/cuts", status_code=303)
+
+
+@router.post("/jobs/{job_id}/cuts/apply")
+async def apply_cut_review(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    job_id: str,
+):
+    _ensure_ready()
+    record = _require_job(job_id)
+    if record.status != "succeeded" or not record.output_path:
+        raise HTTPException(status_code=409, detail="Job output is not ready.")
+    input_path = Path(record.output_path)
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail="Output file missing.")
+
+    suggestions = _load_cut_suggestions(job_id)
+    review = _load_cut_review(job_id)
+    if review is None:
+        raise HTTPException(status_code=409, detail="Cut review has not been saved.")
+
+    form = await _read_limited_urlencoded_form(
+        request,
+        "Cut apply",
+        max_bytes=MAX_CORRECTION_FORM_BYTES,
+        max_num_fields=4,
+    )
+    suggestions_version = form.get("suggestions_version")
+    review_version = form.get("review_version")
+    _ensure_fresh_artifact(
+        job_id,
+        suggestions_version,
+        CUT_SUGGESTIONS_ARTIFACT,
+        "Cut suggestions",
+    )
+    _ensure_fresh_artifact(
+        job_id,
+        review_version,
+        CUT_REVIEW_ARTIFACT,
+        "Cut review",
+    )
+    try:
+        approved_cuts = approved_cuts_from_review(suggestions, review)
+    except CutApplyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not approved_cuts:
+        raise HTTPException(status_code=409, detail="No approved cuts to apply.")
+
+    target = _job_target_format(job_id)
+    background_tasks.add_task(
+        apply_approved_cuts,
+        job_id=job_id,
+        input_path=input_path,
+        cuts=approved_cuts,
+        target=target,
+        suggestions_version=suggestions_version or "",
+        review_version=review_version or "",
+        source_suggestions_artifact=CUT_SUGGESTIONS_ARTIFACT,
+        source_review_artifact=CUT_REVIEW_ARTIFACT,
+    )
     return RedirectResponse(f"/jobs/{job_id}/cuts", status_code=303)
 
 

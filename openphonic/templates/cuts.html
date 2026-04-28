@@ -43,6 +43,12 @@
             <span>Source</span>
             <strong>{{ suggestions.source_artifact or "-" }}</strong>
           </div>
+          {% if apply_manifest %}
+            <div>
+              <span>Apply</span>
+              <strong>{{ apply_manifest.status or "-" }}</strong>
+            </div>
+          {% endif %}
         </div>
       </section>
 
@@ -50,6 +56,19 @@
         <a class="button secondary" href="{{ suggestions_url }}">Suggestions JSON</a>
         {% if review_url %}
           <a class="button secondary" href="{{ review_url }}">Review JSON</a>
+        {% endif %}
+        {% if apply_manifest_url %}
+          <a class="button secondary" href="{{ apply_manifest_url }}">Apply manifest</a>
+        {% endif %}
+        {% if reviewed_output_url %}
+          <a class="button" href="{{ reviewed_output_url }}">Download reviewed audio</a>
+        {% endif %}
+        {% if approved_count > 0 %}
+          <form class="inline-form" action="{{ apply_url }}" method="post">
+            <input type="hidden" name="suggestions_version" value="{{ suggestions_version }}">
+            <input type="hidden" name="review_version" value="{{ review_version }}">
+            <button class="button" type="submit">Apply approved cuts</button>
+          </form>
         {% endif %}
       </section>
 
