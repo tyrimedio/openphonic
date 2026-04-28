@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shlex
 import shutil
 import subprocess
@@ -91,9 +92,7 @@ def run_command(
         log_event(logger, "process.failed", level=logging.ERROR, **failure_fields)
         if log_path is not None:
             append_event(log_path, "process.failed", **failure_fields)
-        raise FFmpegError(
-            f"Command failed ({completed.returncode}): {shlex.join(args)}\n{detail}"
-        )
+        raise FFmpegError(f"Command failed ({completed.returncode}): {shlex.join(args)}\n{detail}")
 
     success_fields = {
         **event_fields,
@@ -221,6 +220,50 @@ def build_loudnorm_apply_command(
         str(input_path),
         "-af",
         loudnorm_filter(stage, measured),
+        "-ar",
+        str(target.sample_rate),
+        "-ac",
+        str(target.channels),
+        "-c:a",
+        target.codec,
+        "-b:a",
+        target.bitrate,
+        str(output_path),
+    ]
+
+
+def _format_filter_time(value: float) -> str:
+    if not math.isfinite(value) or value < 0:
+        raise FFmpegError(f"Invalid cut timestamp: {value!r}")
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def build_apply_cuts_command(
+    input_path: Path,
+    output_path: Path,
+    *,
+    cut_ranges: list[tuple[float, float]],
+    target: TargetFormat,
+) -> list[str]:
+    if not cut_ranges:
+        raise FFmpegError("At least one cut range is required.")
+
+    expressions: list[str] = []
+    for start, end in cut_ranges:
+        if end <= start:
+            raise FFmpegError(f"Invalid cut range: {start!r} to {end!r}")
+        expressions.append(f"between(t,{_format_filter_time(start)},{_format_filter_time(end)})")
+    filter_spec = f"aselect='not({'+'.join(expressions)})',asetpts=N/SR/TB"
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-af",
+        filter_spec,
         "-ar",
         str(target.sample_rate),
         "-ac",

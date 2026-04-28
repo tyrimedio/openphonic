@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from openphonic.pipeline.config import PipelineConfig
+from openphonic.pipeline.config import PipelineConfig, TargetFormat
+from openphonic.pipeline.ffmpeg import build_apply_cuts_command, probe_media, run_command
 from openphonic.pipeline.runner import PipelineRunner
 
 pytestmark = pytest.mark.skipif(
@@ -96,3 +97,26 @@ def test_default_pipeline_processes_real_audio_and_writes_trace_artifacts(tmp_pa
         "ffmpeg",
     ]
     assert all("argv" in event for event in started)
+
+
+def test_apply_cuts_command_processes_real_audio(tmp_path) -> None:
+    input_path = tmp_path / "input.wav"
+    output_path = tmp_path / "reviewed.wav"
+    _make_sine_wave(input_path)
+
+    run_command(
+        build_apply_cuts_command(
+            input_path,
+            output_path,
+            cut_ranges=[(0.25, 0.75)],
+            target=TargetFormat(codec="pcm_s16le", container="wav"),
+        )
+    )
+
+    input_metadata = probe_media(input_path)
+    output_metadata = probe_media(output_path)
+    assert output_path.stat().st_size > 0
+    assert input_metadata.duration_seconds is not None
+    assert output_metadata.duration_seconds is not None
+    assert output_metadata.duration_seconds < input_metadata.duration_seconds - 0.3
+    assert output_metadata.duration_seconds > 0.3

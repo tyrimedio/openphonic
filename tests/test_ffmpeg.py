@@ -4,7 +4,9 @@ import pytest
 
 from openphonic.pipeline.config import PipelineConfig, TargetFormat
 from openphonic.pipeline.ffmpeg import (
+    FFmpegError,
     MediaValidationError,
+    build_apply_cuts_command,
     build_ffprobe_command,
     build_ingest_command,
     build_loudnorm_apply_command,
@@ -126,6 +128,33 @@ def test_loudnorm_apply_command_uses_measured_values() -> None:
     filter_spec = command[command.index("-af") + 1]
     assert "measured_I=-19.11" in filter_spec
     assert "offset=0.02" in filter_spec
+
+
+def test_build_apply_cuts_command_removes_approved_ranges() -> None:
+    command = build_apply_cuts_command(
+        Path("in.m4a"),
+        Path("out.m4a"),
+        cut_ranges=[(0.0, 0.22), (1.5, 2.0)],
+        target=TargetFormat(),
+    )
+
+    filter_spec = command[command.index("-af") + 1]
+    assert command[:4] == ["ffmpeg", "-hide_banner", "-nostdin", "-y"]
+    assert "aselect='not(" in filter_spec
+    assert "between(t,0,0.22)" in filter_spec
+    assert "between(t,1.5,2)" in filter_spec
+    assert "asetpts=N/SR/TB" in filter_spec
+    assert command[-1] == "out.m4a"
+
+
+def test_build_apply_cuts_command_rejects_invalid_ranges() -> None:
+    with pytest.raises(FFmpegError, match="Invalid cut range"):
+        build_apply_cuts_command(
+            Path("in.m4a"),
+            Path("out.m4a"),
+            cut_ranges=[(1.0, 1.0)],
+            target=TargetFormat(),
+        )
 
 
 def test_stage_fails_when_command_does_not_produce_artifact(tmp_path, monkeypatch) -> None:
