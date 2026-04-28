@@ -203,6 +203,16 @@ tr:last-child td {
   vertical-align: middle;
 }
 
+.status.approved {
+  background: #e7f5ec;
+  color: var(--ok);
+}
+
+.status.rejected {
+  background: #fae7e7;
+  color: var(--danger);
+}
+
 .meter {
   width: 120px;
   height: 8px;
@@ -328,6 +338,21 @@ dd {
   font-weight: 650;
 }
 
+.cut-summary {
+  display: grid;
+  gap: 4px;
+}
+
+.cut-summary strong {
+  text-transform: capitalize;
+}
+
+.cut-summary small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .segment {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr);
@@ -400,6 +425,21 @@ dd {
 
 .turn-table td:first-child,
 .turn-table th:first-child {
+  width: 220px;
+}
+
+.cut-review-table td:first-child,
+.cut-review-table th:first-child {
+  width: 170px;
+}
+
+.cut-review-table td:nth-child(3),
+.cut-review-table th:nth-child(3) {
+  width: 150px;
+}
+
+.cut-review-table td:nth-child(4),
+.cut-review-table th:nth-child(4) {
   width: 220px;
 }
 

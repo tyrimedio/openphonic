@@ -63,6 +63,9 @@
         {% if speaker_url %}
           <a class="button secondary" href="{{ speaker_url }}">Speakers</a>
         {% endif %}
+        {% if cut_review_url %}
+          <a class="button secondary" href="{{ cut_review_url }}">Cut review</a>
+        {% endif %}
         <a class="button secondary" href="/api/jobs/{{ job.id }}">JSON</a>
       </section>
 

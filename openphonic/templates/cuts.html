@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cut Review - {{ job.original_filename }} - Openphonic</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell reading">
+      <header class="topbar">
+        <div>
+          <a href="/jobs/{{ job.id }}">Back to job</a>
+          <h1>Cut Review</h1>
+          <p>{{ job.original_filename }}</p>
+        </div>
+        <a class="button secondary" href="{{ suggestions_url }}">Download JSON</a>
+      </header>
+
+      <section class="panel">
+        <div class="metric-grid">
+          <div>
+            <span>Suggestions</span>
+            <strong>{{ rows|length }}</strong>
+          </div>
+          <div>
+            <span>Approved</span>
+            <strong>{{ approved_count }}</strong>
+          </div>
+          <div>
+            <span>Rejected</span>
+            <strong>{{ rejected_count }}</strong>
+          </div>
+          <div>
+            <span>Pending</span>
+            <strong>{{ pending_count }}</strong>
+          </div>
+          <div>
+            <span>Status</span>
+            <strong>{{ suggestions.status or "-" }}</strong>
+          </div>
+          <div>
+            <span>Source</span>
+            <strong>{{ suggestions.source_artifact or "-" }}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="actions">
+        <a class="button secondary" href="{{ suggestions_url }}">Suggestions JSON</a>
+        {% if review_url %}
+          <a class="button secondary" href="{{ review_url }}">Review JSON</a>
+        {% endif %}
+      </section>
+
+      <form action="{{ save_url }}" method="post">
+        <input type="hidden" name="suggestions_version" value="{{ suggestions_version }}">
+        <input type="hidden" name="review_version" value="{{ review_version }}">
+        <section class="panel">
+          <div class="section-heading">
+            <h2>Suggestions</h2>
+            <span>{{ approved_count + rejected_count }} decided</span>
+          </div>
+          {% if rows %}
+            <table class="cut-review-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Suggestion</th>
+                  <th>Decision</th>
+                  <th>Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in rows %}
+                  <tr>
+                    <td class="mono">{{ row.start }} - {{ row.end }}</td>
+                    <td>
+                      <input
+                        type="hidden"
+                        name="suggestion_{{ loop.index0 }}_id"
+                        value="{{ row.id }}"
+                      >
+                      <div class="cut-summary">
+                        <span class="status {{ row.decision }}">{{ row.decision }}</span>
+                        <strong>{{ row.type }}</strong>
+                        {% if row.text %}
+                          <span>{{ row.text }}</span>
+                        {% endif %}
+                        <small>
+                          {{ row.duration }}
+                          {% if row.source != "-" %}
+                            &middot; {{ row.source }}
+                          {% endif %}
+                        </small>
+                      </div>
+                    </td>
+                    <td>
+                      <select
+                        name="suggestion_{{ loop.index0 }}_decision"
+                        aria-label="Decision for {{ row.id }}"
+                      >
+                        <option value="pending" {% if row.decision == "pending" %}selected{% endif %}>Pending</option>
+                        <option value="approved" {% if row.decision == "approved" %}selected{% endif %}>Approve</option>
+                        <option value="rejected" {% if row.decision == "rejected" %}selected{% endif %}>Reject</option>
+                      </select>
+                    </td>
+                    <td>
+                      <input
+                        name="suggestion_{{ loop.index0 }}_note"
+                        value="{{ row.note }}"
+                        aria-label="Note for {{ row.id }}"
+                      >
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% else %}
+            <p class="empty">No cut suggestions.</p>
+          {% endif %}
+        </section>
+
+        <section class="actions">
+          <button class="button" type="submit">Save review</button>
+          <a class="button secondary" href="/jobs/{{ job.id }}">Cancel</a>
+        </section>
+      </form>
+    </main>
+  </body>
+</html>
