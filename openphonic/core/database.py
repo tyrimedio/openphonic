@@ -150,6 +150,27 @@ def list_jobs_by_status(db_path: Path, statuses: tuple[str, ...]) -> list[JobRec
     return [JobRecord(**dict(row)) for row in rows]
 
 
+def list_completed_jobs_before(db_path: Path, cutoff: str) -> list[JobRecord]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status IN ('succeeded', 'failed')
+              AND completed_at IS NOT NULL
+              AND completed_at < ?
+            ORDER BY completed_at ASC
+            """,
+            (cutoff,),
+        ).fetchall()
+    return [JobRecord(**dict(row)) for row in rows]
+
+
+def delete_job(db_path: Path, job_id: str) -> bool:
+    with connect(db_path) as connection:
+        cursor = connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        return cursor.rowcount > 0
+
+
 def claim_failed_job_for_retry(db_path: Path, job_id: str) -> RetryClaim | None:
     with connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")

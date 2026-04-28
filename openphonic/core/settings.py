@@ -30,6 +30,7 @@ class Settings:
     pipeline_config: Path
     preset_dir: Path
     max_upload_mb: int
+    retention_days: int
     public_base_url: str
     hf_token: str | None
     whisper_model: str
@@ -58,6 +59,7 @@ def get_settings() -> Settings:
         pipeline_config=_env_path("OPENPHONIC_PIPELINE_CONFIG", DEFAULT_PIPELINE_CONFIG),
         preset_dir=_env_path("OPENPHONIC_PRESET_DIR", data_dir / "presets"),
         max_upload_mb=_env_int("OPENPHONIC_MAX_UPLOAD_MB", 1024),
+        retention_days=_env_int("OPENPHONIC_RETENTION_DAYS", 0),
         public_base_url=os.getenv("OPENPHONIC_PUBLIC_BASE_URL", "http://127.0.0.1:8000"),
         hf_token=os.getenv("HF_TOKEN") or None,
         whisper_model=os.getenv("OPENPHONIC_WHISPER_MODEL", "small"),

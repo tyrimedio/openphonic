@@ -105,6 +105,10 @@ stages:
 Relative intro/outro paths are resolved from the custom preset file location, so
 a per-show preset can live alongside its local branding audio files.
 
+Set `OPENPHONIC_RETENTION_DAYS` to a positive number to delete succeeded or
+failed jobs older than that many days at startup, including their upload and job
+artifact directories. The default `0` keeps all jobs.
+
 To enable local ML stages, install the optional dependencies:
 
 ```bash
