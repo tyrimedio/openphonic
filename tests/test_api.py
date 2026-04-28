@@ -165,6 +165,14 @@ def test_create_job_rejects_malformed_custom_preset(tmp_path, monkeypatch) -> No
     preset_dir = get_settings().preset_dir
     preset_dir.mkdir(parents=True)
     (preset_dir / "broken.yml").write_text("name: [broken\n", encoding="utf-8")
+    (preset_dir / "scalar-stage.yml").write_text(
+        """
+name: scalar-stage
+stages:
+  loudness: true
+""",
+        encoding="utf-8",
+    )
     started: list[str] = []
 
     def fake_run_job(job_id: str) -> None:
@@ -179,9 +187,17 @@ def test_create_job_rejects_malformed_custom_preset(tmp_path, monkeypatch) -> No
             files={"file": ("input.wav", b"audio", "audio/wav")},
             follow_redirects=False,
         )
+        scalar_response = client.post(
+            "/jobs",
+            data={"preset": "custom:scalar-stage"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+            follow_redirects=False,
+        )
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Unknown pipeline preset: custom:broken"
+    assert scalar_response.status_code == 400
+    assert scalar_response.json()["detail"] == "Unknown pipeline preset: custom:scalar-stage"
     assert started == []
 
 

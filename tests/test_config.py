@@ -82,6 +82,14 @@ target:
 """,
         encoding="utf-8",
     )
+    (preset_dir / "scalar-stage.yml").write_text(
+        """
+name: scalar-stage
+stages:
+  loudness: true
+""",
+        encoding="utf-8",
+    )
 
     presets = available_presets(DEFAULT_PIPELINE_CONFIG, preset_dir)
     custom = preset_by_id(
@@ -110,6 +118,12 @@ target:
     with pytest.raises(ValueError, match="Unknown pipeline preset"):
         preset_by_id(
             "custom:broken",
+            default_path=DEFAULT_PIPELINE_CONFIG,
+            preset_dir=preset_dir,
+        )
+    with pytest.raises(ValueError, match="Unknown pipeline preset"):
+        preset_by_id(
+            "custom:scalar-stage",
             default_path=DEFAULT_PIPELINE_CONFIG,
             preset_dir=preset_dir,
         )

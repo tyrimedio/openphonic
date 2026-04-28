@@ -168,7 +168,10 @@ def _custom_preset_metadata(path: Path) -> tuple[str, str] | None:
         TargetFormat(**(raw.get("target") or {}))
     except TypeError:
         return None
-    if not isinstance(raw.get("stages") or {}, dict):
+    stages = raw.get("stages") or {}
+    if not isinstance(stages, dict):
+        return None
+    if any(not isinstance(stage_config, dict) for stage_config in stages.values()):
         return None
 
     preset_metadata = raw.get("preset")
