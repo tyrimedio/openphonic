@@ -1,9 +1,15 @@
+import asyncio
 import json
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from openphonic.api.routes import MAX_TRANSCRIPT_CORRECTION_FORM_BYTES
+from openphonic.api.routes import (
+    MAX_TRANSCRIPT_CORRECTION_FORM_BYTES,
+    _read_limited_correction_form,
+)
 from openphonic.core.database import create_job, get_job, init_db, update_job
 from openphonic.core.settings import get_settings
 from openphonic.main import create_app
@@ -331,6 +337,26 @@ def test_transcript_corrections_reject_oversized_forms(tmp_path, monkeypatch) ->
 
     assert response.status_code == 413
     assert not (work_dir / "transcript_corrections.json").exists()
+
+
+def test_transcript_corrections_reject_oversized_stream_chunk_before_buffering() -> None:
+    class OversizedChunk:
+        def __len__(self) -> int:
+            return MAX_TRANSCRIPT_CORRECTION_FORM_BYTES + 1
+
+        def __iter__(self):
+            raise AssertionError("oversized chunk was buffered")
+
+    class FakeRequest:
+        headers = {"content-type": "application/x-www-form-urlencoded"}
+
+        async def stream(self):
+            yield OversizedChunk()
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(_read_limited_correction_form(FakeRequest()))
+
+    assert exc_info.value.status_code == 413
 
 
 def test_transcript_corrections_return_404_when_transcript_is_missing(

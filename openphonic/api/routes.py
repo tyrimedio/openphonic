@@ -310,9 +310,9 @@ async def _read_limited_correction_form(request: Request) -> dict[str, str]:
 
     body = bytearray()
     async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > MAX_TRANSCRIPT_CORRECTION_FORM_BYTES:
+        if len(body) + len(chunk) > MAX_TRANSCRIPT_CORRECTION_FORM_BYTES:
             raise HTTPException(status_code=413, detail="Transcript corrections form is too large.")
+        body.extend(chunk)
 
     try:
         decoded = body.decode("utf-8")
