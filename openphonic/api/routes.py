@@ -10,7 +10,14 @@ from fastapi.templating import Jinja2Templates
 
 from openphonic.core.database import create_job, init_db
 from openphonic.core.settings import get_settings
-from openphonic.services.jobs import fetch_job, recent_jobs, reserve_upload, run_job
+from openphonic.services.jobs import (
+    JobRetryError,
+    fetch_job,
+    recent_jobs,
+    reserve_upload,
+    retry_failed_job,
+    run_job,
+)
 from openphonic.services.storage import (
     JobArtifact,
     job_artifact_path,
@@ -135,6 +142,25 @@ async def create_job_form(
     preset: PresetForm = "podcast-default",
 ):
     payload = await _create_job(background_tasks, file, preset)
+    return RedirectResponse(f"/jobs/{payload['id']}", status_code=303)
+
+
+@router.post("/api/jobs/{job_id}/retry")
+def retry_job_api(background_tasks: BackgroundTasks, job_id: str) -> dict[str, str]:
+    _ensure_ready()
+    try:
+        retry_failed_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Job not found.") from exc
+    except JobRetryError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    background_tasks.add_task(run_job, job_id)
+    return {"id": job_id, "status_url": f"/api/jobs/{job_id}"}
+
+
+@router.post("/jobs/{job_id}/retry")
+def retry_job_form(background_tasks: BackgroundTasks, job_id: str):
+    payload = retry_job_api(background_tasks, job_id)
     return RedirectResponse(f"/jobs/{payload['id']}", status_code=303)
 
 

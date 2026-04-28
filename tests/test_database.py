@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from openphonic.core.database import create_job, init_db, list_jobs, update_job
+from openphonic.core.database import create_job, init_db, list_jobs, list_jobs_by_status, update_job
 
 
 def test_job_record_lifecycle_is_durable(tmp_path) -> None:
@@ -23,3 +23,5 @@ def test_job_record_lifecycle_is_durable(tmp_path) -> None:
     assert updated.status == "running"
     assert updated.current_stage == "ingest"
     assert list_jobs(db_path)[0].id == "job-1"
+    assert list_jobs_by_status(db_path, ("running",))[0].id == "job-1"
+    assert list_jobs_by_status(db_path, ("failed",)) == []

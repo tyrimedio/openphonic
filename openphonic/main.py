@@ -9,6 +9,7 @@ from openphonic.api.routes import router
 from openphonic.core.database import init_db
 from openphonic.core.logging import configure_logging
 from openphonic.core.settings import get_settings
+from openphonic.services.jobs import recover_interrupted_jobs
 from openphonic.services.storage import ensure_storage
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
@@ -20,6 +21,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     ensure_storage(settings)
     init_db(settings.database_path)
+    recover_interrupted_jobs()
     yield
 
 

@@ -132,6 +132,18 @@ def list_jobs(db_path: Path, limit: int = 100) -> list[JobRecord]:
     return [JobRecord(**dict(row)) for row in rows]
 
 
+def list_jobs_by_status(db_path: Path, statuses: tuple[str, ...]) -> list[JobRecord]:
+    if not statuses:
+        return []
+    placeholders = ", ".join("?" for _ in statuses)
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            f"SELECT * FROM jobs WHERE status IN ({placeholders}) ORDER BY created_at ASC",
+            statuses,
+        ).fetchall()
+    return [JobRecord(**dict(row)) for row in rows]
+
+
 def update_job(db_path: Path, job_id: str, **fields: Any) -> JobRecord:
     unknown = set(fields) - UPDATE_FIELDS
     if unknown:
