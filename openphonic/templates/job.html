@@ -58,7 +58,7 @@
           </form>
         {% endif %}
         {% if job.transcript_path %}
-          <a class="button secondary" href="/api/jobs/{{ job.id }}/transcript">Transcript</a>
+          <a class="button secondary" href="/jobs/{{ job.id }}/transcript">Transcript</a>
         {% endif %}
         <a class="button secondary" href="/api/jobs/{{ job.id }}">JSON</a>
       </section>
@@ -95,8 +95,12 @@
               {% for artifact in artifacts %}
                 <tr>
                   <td class="mono">{{ artifact.name }}</td>
-                  <td>{{ artifact.size_bytes }} B</td>
-                  <td><a href="{{ artifact.url }}">Open</a></td>
+                  <td>{{ artifact.size }}</td>
+                  <td>
+                    <a href="{{ artifact.page_url }}">View</a>
+                    <span class="link-separator">|</span>
+                    <a href="{{ artifact.download_url }}">Download</a>
+                  </td>
                 </tr>
               {% endfor %}
             </tbody>

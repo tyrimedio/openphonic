@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ artifact.name }} - {{ job.original_filename }} - Openphonic</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell reading">
+      <header class="topbar">
+        <div>
+          <a href="/jobs/{{ job.id }}">Back to job</a>
+          <h1>Artifact</h1>
+          <p class="mono">{{ artifact.name }}</p>
+        </div>
+        <a class="button secondary" href="{{ artifact.download_url }}">Download</a>
+      </header>
+
+      <section class="panel">
+        <dl class="details">
+          <div>
+            <dt>File</dt>
+            <dd class="mono">{{ artifact.name }}</dd>
+          </div>
+          <div>
+            <dt>Size</dt>
+            <dd>{{ artifact.size }}</dd>
+          </div>
+          <div>
+            <dt>Job</dt>
+            <dd><a href="/jobs/{{ job.id }}">{{ job.original_filename }}</a></dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Preview</h2>
+          {% if preview.truncated %}
+            <span>First 128 KB</span>
+          {% endif %}
+        </div>
+        {% if preview.available %}
+          <pre class="artifact-preview"><code>{{ preview.content }}</code></pre>
+        {% else %}
+          <p class="empty">{{ preview.reason }}</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

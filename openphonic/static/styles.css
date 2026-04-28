@@ -41,6 +41,10 @@ a {
   width: min(760px, calc(100vw - 32px));
 }
 
+.shell.reading {
+  width: min(960px, calc(100vw - 32px));
+}
+
 .topbar {
   display: flex;
   align-items: end;
@@ -253,15 +257,99 @@ dd {
   overflow-wrap: anywhere;
 }
 
+.link-separator {
+  color: var(--muted);
+  padding: 0 4px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.metric-grid div {
+  display: grid;
+  gap: 3px;
+}
+
+.metric-grid span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.metric-grid strong {
+  min-width: 0;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.transcript-list {
+  display: grid;
+  gap: 18px;
+}
+
+.segment {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 10px 16px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.segment:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.segment-time {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.segment p,
+.word-list {
+  min-width: 0;
+}
+
+.word-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  grid-column: 2;
+}
+
+.word {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 2px 7px;
+  font-size: 13px;
+}
+
+.artifact-preview {
+  max-height: 620px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 14px;
+  white-space: pre-wrap;
+}
+
 .artifact-table td:nth-child(2),
 .artifact-table th:nth-child(2) {
-  width: 96px;
+  width: 112px;
   white-space: nowrap;
 }
 
 .artifact-table td:last-child,
 .artifact-table th:last-child {
-  width: 72px;
+  width: 148px;
   text-align: right;
 }
 
@@ -284,5 +372,23 @@ dd {
   .details div {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .segment {
+    grid-template-columns: 1fr;
+  }
+
+  .word-list {
+    grid-column: 1;
+  }
+}
+
+@media (max-width: 460px) {
+  .metric-grid {
+    grid-template-columns: 1fr;
   }
 }

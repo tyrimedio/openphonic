@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -62,6 +63,107 @@ def test_job_artifact_routes_list_and_serve_files(tmp_path, monkeypatch) -> None
     assert page_response.status_code == 200
     assert "Pipeline manifest" in page_response.text
     assert "job-events.jsonl" in page_response.text
+    assert "/jobs/job-1/artifacts/pipeline_manifest.json" in page_response.text
+
+
+def test_artifact_page_previews_text_artifacts(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    (work_dir / "pipeline_manifest.json").write_text('{"status":"failed"}', encoding="utf-8")
+
+    with TestClient(create_app()) as client:
+        response = client.get("/jobs/job-1/artifacts/pipeline_manifest.json")
+
+    assert response.status_code == 200
+    assert "pipeline_manifest.json" in response.text
+    assert "status" in response.text
+    assert "failed" in response.text
+    assert "/api/jobs/job-1/artifacts/pipeline_manifest.json" in response.text
+
+
+def test_artifact_page_rejects_missing_and_traversal_paths(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    job_dir(get_settings(), "job-1")
+
+    with TestClient(create_app()) as client:
+        missing_response = client.get("/jobs/job-1/artifacts/missing.json")
+        traversal_response = client.get("/jobs/job-1/artifacts/%2E%2E/openphonic.sqlite3")
+
+    assert missing_response.status_code == 404
+    assert traversal_response.status_code == 400
+
+
+def test_transcript_page_renders_segments_and_word_timestamps(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    transcript_path = work_dir / "transcript.json"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "engine": "faster-whisper",
+                "model": "tiny",
+                "device": "cpu",
+                "language": "en",
+                "language_probability": 0.98,
+                "duration": 1.25,
+                "segments": [
+                    {
+                        "id": 1,
+                        "start": 0.0,
+                        "end": 1.25,
+                        "text": " Hello world",
+                        "words": [
+                            {"start": 0.0, "end": 0.4, "word": " Hello", "probability": 0.95},
+                            {"start": 0.5, "end": 1.2, "word": " world", "probability": 0.93},
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (work_dir / "transcript.vtt").write_text("WEBVTT\n", encoding="utf-8")
+    update_job(
+        db_path,
+        "job-1",
+        status="succeeded",
+        transcript_path=str(transcript_path),
+        current_stage="complete",
+        progress=100,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.get("/jobs/job-1/transcript")
+
+    assert response.status_code == 200
+    assert "Transcript" in response.text
+    assert "Hello world" in response.text
+    assert "Hello" in response.text
+    assert "00:00.000 - 00:01.250" in response.text
+    assert "98.0%" in response.text
+    assert "/api/jobs/job-1/artifacts/transcript.vtt" in response.text
+
+
+def test_transcript_page_returns_404_when_missing(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/jobs/job-1/transcript")
+
+    assert response.status_code == 404
 
 
 def test_artifact_download_rejects_missing_and_traversal_paths(tmp_path, monkeypatch) -> None:
