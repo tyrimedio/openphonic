@@ -87,6 +87,31 @@ def write_test_cut_suggestions(work_dir: Path) -> dict:
     return suggestions
 
 
+def write_many_cut_suggestions(work_dir: Path, count: int) -> dict:
+    suggestions = {
+        "schema_version": 1,
+        "status": "not_applied",
+        "source_artifact": "transcript.json",
+        "configured_words": ["um"],
+        "min_silence_seconds": 0.75,
+        "suggestion_count": count,
+        "suggestions": [
+            {
+                "id": f"cut-{index:04d}",
+                "type": "filler_word",
+                "start": float(index),
+                "end": float(index) + 0.2,
+                "duration": 0.2,
+                "text": "um",
+                "reason": "Matched configured filler word.",
+            }
+            for index in range(count)
+        ],
+    }
+    (work_dir / "cut_suggestions.json").write_text(json.dumps(suggestions), encoding="utf-8")
+    return suggestions
+
+
 def artifact_version(path: Path) -> str:
     stat = path.stat()
     return f"{stat.st_mtime_ns}:{stat.st_size}"
@@ -649,6 +674,47 @@ def test_cut_review_rejects_stale_review_saves(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 409
     assert json.loads(review_path.read_text(encoding="utf-8")) == existing_review
+
+
+def test_cut_review_allows_large_suggestion_forms(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    suggestion_count = 3_333
+    write_many_cut_suggestions(work_dir, suggestion_count)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    form = {
+        "suggestions_version": artifact_version(work_dir / "cut_suggestions.json"),
+        "review_version": "missing",
+    }
+    for index in range(suggestion_count):
+        form[f"suggestion_{index}_id"] = f"cut-{index:04d}"
+        form[f"suggestion_{index}_decision"] = "approved" if index == 0 else "pending"
+        form[f"suggestion_{index}_note"] = ""
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/cuts/review",
+            data=form,
+            follow_redirects=False,
+        )
+
+    review = json.loads((work_dir / "cut_review.json").read_text(encoding="utf-8"))
+    assert response.status_code == 303
+    assert response.headers["location"] == "/jobs/job-1/cuts"
+    assert review["decisions"] == [
+        {
+            "suggestion_id": "cut-0000",
+            "decision": "approved",
+            "type": "filler_word",
+            "start": 0.0,
+            "end": 0.2,
+            "duration": 0.2,
+        }
+    ]
 
 
 def test_cut_review_rejects_stale_suggestions(tmp_path, monkeypatch) -> None:

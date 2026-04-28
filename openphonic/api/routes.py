@@ -58,6 +58,11 @@ CUT_SUGGESTIONS_ARTIFACT = "cut_suggestions.json"
 CUT_REVIEW_ARTIFACT = "cut_review.json"
 MAX_CORRECTION_FORM_BYTES = 1024 * 1024
 MAX_CORRECTION_FIELDS = 10_000
+MAX_CUT_REVIEW_FORM_BYTES = 8 * 1024 * 1024
+MAX_CUT_REVIEW_FORM_FIELDS = 200_000
+CUT_REVIEW_FORM_STATIC_FIELDS = 2
+CUT_REVIEW_FORM_FIELDS_PER_SUGGESTION = 3
+CUT_REVIEW_FORM_BYTES_PER_SUGGESTION = 256
 MAX_TRANSCRIPT_CORRECTION_FORM_BYTES = MAX_CORRECTION_FORM_BYTES
 MAX_TRANSCRIPT_CORRECTION_FIELDS = MAX_CORRECTION_FIELDS
 
@@ -554,9 +559,26 @@ def _build_cut_review(
     }
 
 
+def _cut_review_form_limits(suggestions: dict[str, Any]) -> tuple[int, int]:
+    suggestion_count = len(_cut_suggestion_rows(suggestions))
+    expected_fields = (
+        CUT_REVIEW_FORM_STATIC_FIELDS + suggestion_count * CUT_REVIEW_FORM_FIELDS_PER_SUGGESTION
+    )
+    expected_bytes = (
+        MAX_CORRECTION_FORM_BYTES + suggestion_count * CUT_REVIEW_FORM_BYTES_PER_SUGGESTION
+    )
+    return (
+        min(MAX_CUT_REVIEW_FORM_BYTES, max(MAX_CORRECTION_FORM_BYTES, expected_bytes)),
+        min(MAX_CUT_REVIEW_FORM_FIELDS, max(MAX_CORRECTION_FIELDS, expected_fields)),
+    )
+
+
 async def _read_limited_urlencoded_form(
     request: Request,
     label: str,
+    *,
+    max_bytes: int = MAX_CORRECTION_FORM_BYTES,
+    max_num_fields: int = MAX_CORRECTION_FIELDS,
 ) -> dict[str, str]:
     content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
     if content_type != "application/x-www-form-urlencoded":
@@ -571,12 +593,12 @@ async def _read_limited_urlencoded_form(
             declared_size = int(content_length)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid Content-Length.") from exc
-        if declared_size > MAX_CORRECTION_FORM_BYTES:
+        if declared_size > max_bytes:
             raise HTTPException(status_code=413, detail=f"{label} form is too large.")
 
     body = bytearray()
     async for chunk in request.stream():
-        if len(body) + len(chunk) > MAX_CORRECTION_FORM_BYTES:
+        if len(body) + len(chunk) > max_bytes:
             raise HTTPException(status_code=413, detail=f"{label} form is too large.")
         body.extend(chunk)
 
@@ -589,7 +611,7 @@ async def _read_limited_urlencoded_form(
         parsed = parse_qs(
             decoded,
             keep_blank_values=True,
-            max_num_fields=MAX_CORRECTION_FIELDS,
+            max_num_fields=max_num_fields,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"{label} form is invalid.") from exc
@@ -886,7 +908,13 @@ async def save_cut_review(request: Request, job_id: str):
     _ensure_ready()
     _require_job(job_id)
     suggestions = _load_cut_suggestions(job_id)
-    form = await _read_limited_urlencoded_form(request, "Cut review")
+    max_bytes, max_num_fields = _cut_review_form_limits(suggestions)
+    form = await _read_limited_urlencoded_form(
+        request,
+        "Cut review",
+        max_bytes=max_bytes,
+        max_num_fields=max_num_fields,
+    )
     _ensure_fresh_artifact(
         job_id,
         form.get("suggestions_version"),
