@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 import yaml
 
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "config"
+CUSTOM_PRESET_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,10 @@ BUILTIN_PRESETS = (
 )
 
 
-def available_presets(default_path: str | Path | None = None) -> list[PipelinePreset]:
+def available_presets(
+    default_path: str | Path | None = None,
+    preset_dir: str | Path | None = None,
+) -> list[PipelinePreset]:
     default_config_path = Path(default_path).expanduser() if default_path is not None else None
     presets = list(BUILTIN_PRESETS)
     if default_config_path is not None:
@@ -84,6 +89,7 @@ def available_presets(default_path: str | Path | None = None) -> list[PipelinePr
             description=presets[0].description,
             path=default_config_path,
         )
+    presets.extend(_custom_presets(preset_dir))
     return presets
 
 
@@ -91,8 +97,9 @@ def preset_by_id(
     preset_id: str,
     *,
     default_path: str | Path | None = None,
+    preset_dir: str | Path | None = None,
 ) -> PipelinePreset:
-    for preset in available_presets(default_path):
+    for preset in available_presets(default_path, preset_dir):
         if preset.id == preset_id:
             return preset
     raise ValueError(f"Unknown pipeline preset: {preset_id}")
@@ -102,7 +109,73 @@ def load_pipeline_config_for_preset(
     preset_id: str | None,
     *,
     default_path: str | Path,
+    preset_dir: str | Path | None = None,
 ) -> PipelineConfig:
     if not preset_id:
         return PipelineConfig.from_path(default_path)
-    return PipelineConfig.from_path(preset_by_id(preset_id, default_path=default_path).path)
+    return PipelineConfig.from_path(
+        preset_by_id(preset_id, default_path=default_path, preset_dir=preset_dir).path
+    )
+
+
+def _custom_presets(preset_dir: str | Path | None) -> list[PipelinePreset]:
+    if preset_dir is None:
+        return []
+    directory = Path(preset_dir).expanduser()
+    if not directory.exists():
+        return []
+    if not directory.is_dir():
+        return []
+
+    presets: list[PipelinePreset] = []
+    seen: set[str] = {preset.id for preset in BUILTIN_PRESETS}
+    candidates = sorted(
+        path for path in directory.iterdir() if path.is_file() and path.suffix in {".yml", ".yaml"}
+    )
+    for path in candidates:
+        stem = path.stem
+        if not CUSTOM_PRESET_ID.fullmatch(stem):
+            continue
+        preset_id = f"custom:{stem}"
+        if preset_id in seen:
+            continue
+        seen.add(preset_id)
+        label, description = _custom_preset_metadata(path)
+        presets.append(
+            PipelinePreset(
+                id=preset_id,
+                label=label,
+                description=description,
+                path=path,
+            )
+        )
+    return presets
+
+
+def _custom_preset_metadata(path: Path) -> tuple[str, str]:
+    label = _label_from_stem(path.stem)
+    description = f"Custom preset from {path.name}."
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError, UnicodeDecodeError):
+        return label, description
+    if not isinstance(raw, dict):
+        return label, description
+
+    preset_metadata = raw.get("preset")
+    if isinstance(preset_metadata, dict):
+        configured_label = preset_metadata.get("label")
+        configured_description = preset_metadata.get("description")
+    else:
+        configured_label = raw.get("label")
+        configured_description = raw.get("description")
+
+    if isinstance(configured_label, str) and configured_label.strip():
+        label = configured_label.strip()
+    if isinstance(configured_description, str) and configured_description.strip():
+        description = configured_description.strip()
+    return label, description
+
+
+def _label_from_stem(stem: str) -> str:
+    return stem.replace("_", " ").replace("-", " ").strip().title() or stem

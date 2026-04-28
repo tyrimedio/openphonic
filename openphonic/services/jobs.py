@@ -159,7 +159,11 @@ def run_job(job_id: str) -> None:
     try:
         job_config = record.to_dict().get("config", {})
         preset = job_config.get("preset") if isinstance(job_config, dict) else None
-        config = load_pipeline_config_for_preset(preset, default_path=settings.pipeline_config)
+        config = load_pipeline_config_for_preset(
+            preset,
+            default_path=settings.pipeline_config,
+            preset_dir=settings.preset_dir,
+        )
         result = PipelineRunner(
             config,
             progress_callback=on_stage,

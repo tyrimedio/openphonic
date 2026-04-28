@@ -79,6 +79,24 @@ The web uploader currently exposes these built-in presets:
 The ML presets are explicit opt-ins. They fail loudly when the required local
 tool is unavailable rather than pretending cleanup or isolation ran.
 
+You can add per-show presets without changing application code by placing
+`*.yml` or `*.yaml` files in `OPENPHONIC_PRESET_DIR`, which defaults to
+`./data/presets`. The uploader lists these as `custom:<filename>` presets. A
+custom preset can include optional display metadata:
+
+```yaml
+preset:
+  label: Daily show
+  description: Daily show production preset.
+name: daily-show
+target:
+  sample_rate: 48000
+  channels: 2
+stages:
+  loudness:
+    enabled: true
+```
+
 To enable local ML stages, install the optional dependencies:
 
 ```bash

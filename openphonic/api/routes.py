@@ -348,7 +348,9 @@ def _job_target_format(job_id: str) -> TargetFormat:
     job_config = record.to_dict().get("config", {}) if record is not None else {}
     preset = job_config.get("preset") if isinstance(job_config, dict) else None
     return load_pipeline_config_for_preset(
-        preset, default_path=get_settings().pipeline_config
+        preset,
+        default_path=get_settings().pipeline_config,
+        preset_dir=get_settings().preset_dir,
     ).target
 
 
@@ -745,7 +747,10 @@ def index(request: Request):
             "request": request,
             "jobs": recent_jobs(50),
             "settings": get_settings(),
-            "presets": available_presets(get_settings().pipeline_config),
+            "presets": available_presets(
+                get_settings().pipeline_config,
+                get_settings().preset_dir,
+            ),
         },
     )
 
@@ -1141,7 +1146,11 @@ async def _create_job(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename.")
     try:
-        preset_info = preset_by_id(preset, default_path=settings.pipeline_config)
+        preset_info = preset_by_id(
+            preset,
+            default_path=settings.pipeline_config,
+            preset_dir=settings.preset_dir,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

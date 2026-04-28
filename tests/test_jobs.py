@@ -95,6 +95,39 @@ def test_run_job_uses_selected_pipeline_preset(tmp_path, monkeypatch) -> None:
     assert SuccessfulRunner.seen_config.enabled("music_separation") is False
 
 
+def test_run_job_uses_custom_pipeline_preset(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    preset_dir = get_settings().preset_dir
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily-show.yml").write_text(
+        """
+preset:
+  label: Daily show
+name: daily-show
+stages:
+  loudness:
+    enabled: false
+""",
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(
+        db_path,
+        job_id="job-1",
+        original_filename="input.wav",
+        input_path=input_path,
+        config={"preset": "custom:daily-show"},
+    )
+    monkeypatch.setattr("openphonic.services.jobs.PipelineRunner", SuccessfulRunner)
+
+    run_job("job-1")
+
+    assert SuccessfulRunner.seen_config is not None
+    assert SuccessfulRunner.seen_config.name == "daily-show"
+    assert SuccessfulRunner.seen_config.enabled("loudness") is False
+
+
 def test_run_job_records_failure_without_traceback_printing(tmp_path, monkeypatch) -> None:
     db_path = configure_tmp_settings(tmp_path, monkeypatch)
     input_path = tmp_path / "input.wav"
