@@ -51,12 +51,16 @@
         {% if vtt_url %}
           <a class="button secondary" href="{{ vtt_url }}">Transcript VTT</a>
         {% endif %}
+        {% if corrections_url %}
+          <a class="button secondary" href="{{ corrections_url }}">Corrections JSON</a>
+        {% endif %}
+        <a class="button secondary" href="{{ edit_url }}">Edit transcript</a>
       </section>
 
       <section class="panel">
         <div class="section-heading">
           <h2>Segments</h2>
-          <span class="mono">{{ artifact_name }}</span>
+          <span>{{ correction_count }} corrected</span>
         </div>
         {% if segments %}
           <div class="transcript-list">
@@ -65,7 +69,12 @@
                 <div class="segment-time mono">
                   {{ segment.start }} - {{ segment.end }}
                 </div>
-                <p>{{ segment.text }}</p>
+                <p>
+                  {{ segment.text }}
+                  {% if segment.is_corrected %}
+                    <span class="status corrected">corrected</span>
+                  {% endif %}
+                </p>
                 {% if segment.words %}
                   <div class="word-list">
                     {% for word in segment.words %}

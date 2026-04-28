@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -22,6 +22,7 @@ from openphonic.services.jobs import (
 from openphonic.services.storage import (
     JobArtifact,
     job_artifact_path,
+    job_dir,
     list_job_artifacts,
     save_upload_file,
 )
@@ -51,6 +52,9 @@ TEXT_ARTIFACT_EXTENSIONS = {
     ".yaml",
     ".yml",
 }
+TRANSCRIPT_CORRECTIONS_ARTIFACT = "transcript_corrections.json"
+MAX_TRANSCRIPT_CORRECTION_FORM_BYTES = 1024 * 1024
+MAX_TRANSCRIPT_CORRECTION_FIELDS = 10_000
 
 
 def _ensure_ready() -> None:
@@ -163,11 +167,70 @@ def _load_transcript_artifact(
     return transcript, artifact_name
 
 
-def _transcript_segments(transcript: dict[str, Any]) -> list[dict[str, Any]]:
-    rendered_segments: list[dict[str, Any]] = []
-    for segment in transcript.get("segments") or []:
+def _corrections_path(job_id: str) -> Path:
+    return job_dir(get_settings(), job_id) / TRANSCRIPT_CORRECTIONS_ARTIFACT
+
+
+def _corrections_version(job_id: str) -> str:
+    try:
+        path = job_artifact_path(get_settings(), job_id, TRANSCRIPT_CORRECTIONS_ARTIFACT)
+    except FileNotFoundError:
+        return "missing"
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    stat = path.stat()
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+
+def _load_transcript_corrections(job_id: str) -> dict[str, Any] | None:
+    try:
+        path = job_artifact_path(get_settings(), job_id, TRANSCRIPT_CORRECTIONS_ARTIFACT)
+    except FileNotFoundError:
+        return None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        corrections = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=422, detail="Transcript corrections are invalid JSON."
+        ) from exc
+    if not isinstance(corrections, dict):
+        raise HTTPException(status_code=422, detail="Transcript corrections must be a JSON object.")
+    return corrections
+
+
+def _correction_text_by_index(corrections: dict[str, Any] | None) -> dict[int, str]:
+    if corrections is None:
+        return {}
+
+    corrected: dict[int, str] = {}
+    for segment in corrections.get("segments") or []:
         if not isinstance(segment, dict):
             continue
+        try:
+            segment_index = int(segment["segment_index"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        text = segment.get("text")
+        if isinstance(text, str):
+            corrected[segment_index] = text
+    return corrected
+
+
+def _transcript_segments(
+    transcript: dict[str, Any],
+    corrections: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    rendered_segments: list[dict[str, Any]] = []
+    corrected_text = _correction_text_by_index(corrections)
+    for index, segment in enumerate(transcript.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        original_text = segment.get("text") or ""
+        text = corrected_text.get(index, original_text)
         words = []
         for word in segment.get("words") or []:
             if not isinstance(word, dict):
@@ -182,14 +245,101 @@ def _transcript_segments(transcript: dict[str, Any]) -> list[dict[str, Any]]:
             )
         rendered_segments.append(
             {
+                "index": index,
                 "id": segment.get("id"),
                 "start": _format_seconds(segment.get("start")),
                 "end": _format_seconds(segment.get("end")),
-                "text": segment.get("text") or "",
+                "start_seconds": segment.get("start"),
+                "end_seconds": segment.get("end"),
+                "text": text,
+                "original_text": original_text,
+                "is_corrected": text != original_text,
                 "words": words,
             }
         )
     return rendered_segments
+
+
+def _build_transcript_corrections(
+    transcript: dict[str, Any],
+    artifact_name: str,
+    form: dict[str, Any],
+) -> dict[str, Any]:
+    corrections: list[dict[str, Any]] = []
+    for index, segment in enumerate(transcript.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        original_text = str(segment.get("text") or "")
+        corrected_text = str(form.get(f"segment_{index}_text", original_text))
+        if corrected_text == original_text:
+            continue
+        corrections.append(
+            {
+                "segment_index": index,
+                "segment_id": segment.get("id"),
+                "start": segment.get("start"),
+                "end": segment.get("end"),
+                "original_text": original_text,
+                "text": corrected_text,
+            }
+        )
+
+    return {
+        "schema_version": 1,
+        "source_artifact": artifact_name,
+        "segments": corrections,
+    }
+
+
+async def _read_limited_correction_form(request: Request) -> dict[str, str]:
+    content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+    if content_type != "application/x-www-form-urlencoded":
+        raise HTTPException(
+            status_code=415,
+            detail="Transcript corrections must be submitted as a URL-encoded form.",
+        )
+
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_size = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length.") from exc
+        if declared_size > MAX_TRANSCRIPT_CORRECTION_FORM_BYTES:
+            raise HTTPException(status_code=413, detail="Transcript corrections form is too large.")
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_TRANSCRIPT_CORRECTION_FORM_BYTES:
+            raise HTTPException(status_code=413, detail="Transcript corrections form is too large.")
+        body.extend(chunk)
+
+    try:
+        decoded = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail="Transcript corrections form is not UTF-8."
+        ) from exc
+
+    try:
+        parsed = parse_qs(
+            decoded,
+            keep_blank_values=True,
+            max_num_fields=MAX_TRANSCRIPT_CORRECTION_FIELDS,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="Transcript corrections form is invalid."
+        ) from exc
+    return {key: values[-1] if values else "" for key, values in parsed.items()}
+
+
+def _ensure_fresh_corrections(job_id: str, submitted_version: str | None) -> None:
+    if submitted_version != _corrections_version(job_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Transcript corrections changed. Reload the edit page and try again.",
+        )
 
 
 def _artifact_preview(path: Path) -> dict[str, Any]:
@@ -265,7 +415,8 @@ def transcript_page(request: Request, job_id: str):
     _ensure_ready()
     record = _require_job(job_id)
     transcript, artifact_name = _load_transcript_artifact(job_id, record.transcript_path)
-    segments = _transcript_segments(transcript)
+    corrections = _load_transcript_corrections(job_id)
+    segments = _transcript_segments(transcript, corrections)
     word_count = sum(len(segment["words"]) for segment in segments)
     vtt_name = "transcript.vtt"
     artifacts = {artifact.name for artifact in list_job_artifacts(get_settings(), job_id)}
@@ -281,10 +432,51 @@ def transcript_page(request: Request, job_id: str):
             "artifact_name": artifact_name,
             "download_url": _artifact_url(job_id, artifact_name),
             "vtt_url": _artifact_url(job_id, vtt_name) if vtt_name in artifacts else None,
+            "edit_url": f"/jobs/{job_id}/transcript/edit",
+            "corrections_url": _artifact_url(job_id, TRANSCRIPT_CORRECTIONS_ARTIFACT)
+            if corrections is not None
+            else None,
+            "correction_count": sum(1 for segment in segments if segment["is_corrected"]),
             "language_probability": _format_probability(transcript.get("language_probability")),
             "duration": _format_seconds(transcript.get("duration")),
         },
     )
+
+
+@router.get("/jobs/{job_id}/transcript/edit", response_class=HTMLResponse)
+def transcript_edit_page(request: Request, job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    transcript, artifact_name = _load_transcript_artifact(job_id, record.transcript_path)
+    corrections = _load_transcript_corrections(job_id)
+    segments = _transcript_segments(transcript, corrections)
+    return templates.TemplateResponse(
+        request,
+        "transcript_edit.html",
+        {
+            "request": request,
+            "job": record,
+            "segments": segments,
+            "artifact_name": artifact_name,
+            "corrections_version": _corrections_version(job_id),
+            "save_url": f"/jobs/{job_id}/transcript/corrections",
+        },
+    )
+
+
+@router.post("/jobs/{job_id}/transcript/corrections")
+async def save_transcript_corrections(request: Request, job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    transcript, artifact_name = _load_transcript_artifact(job_id, record.transcript_path)
+    form = await _read_limited_correction_form(request)
+    _ensure_fresh_corrections(job_id, form.get("corrections_version"))
+    corrections = _build_transcript_corrections(transcript, artifact_name, form)
+    serialized = json.dumps(corrections, indent=2)
+    if len(serialized.encode("utf-8")) > MAX_TRANSCRIPT_CORRECTION_FORM_BYTES:
+        raise HTTPException(status_code=413, detail="Transcript corrections artifact is too large.")
+    _corrections_path(job_id).write_text(serialized, encoding="utf-8")
+    return RedirectResponse(f"/jobs/{job_id}/transcript", status_code=303)
 
 
 @router.get("/jobs/{job_id}/artifacts/{artifact_name:path}", response_class=HTMLResponse)
