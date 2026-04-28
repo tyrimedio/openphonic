@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from openphonic.api.routes import MAX_TRANSCRIPT_CORRECTION_FORM_BYTES
 from openphonic.core.database import create_job, get_job, init_db, update_job
 from openphonic.core.settings import get_settings
 from openphonic.main import create_app
@@ -201,6 +202,7 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
         save_response = client.post(
             "/jobs/job-1/transcript/corrections",
             data={
+                "corrections_version": "missing",
                 "segment_0_text": "Corrected intro",
                 "segment_1_text": " Second segment",
             },
@@ -211,6 +213,7 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
 
     corrections_path = work_dir / "transcript_corrections.json"
     assert edit_response.status_code == 200
+    assert 'name="corrections_version" value="missing"' in edit_response.text
     assert 'name="segment_0_text"' in edit_response.text
     assert "Original intro" in edit_response.text
     assert save_response.status_code == 303
@@ -236,6 +239,98 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
     assert "Corrections JSON" in transcript_response.text
     assert "1 corrected" in transcript_response.text
     assert artifact_response.status_code == 200
+
+
+def test_transcript_corrections_reject_stale_edits(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    transcript_path = work_dir / "transcript.json"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "segments": [
+                    {"id": 1, "start": 0.0, "end": 1.0, "text": " Original intro"},
+                    {"id": 2, "start": 1.0, "end": 2.0, "text": " Original outro"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    update_job(
+        db_path,
+        "job-1",
+        status="succeeded",
+        transcript_path=str(transcript_path),
+        current_stage="complete",
+        progress=100,
+    )
+
+    existing_corrections = {
+        "schema_version": 1,
+        "source_artifact": "transcript.json",
+        "segments": [
+            {
+                "segment_index": 0,
+                "segment_id": 1,
+                "start": 0.0,
+                "end": 1.0,
+                "original_text": " Original intro",
+                "text": "Corrected intro",
+            }
+        ],
+    }
+    corrections_path = work_dir / "transcript_corrections.json"
+    corrections_path.write_text(json.dumps(existing_corrections), encoding="utf-8")
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/transcript/corrections",
+            data={
+                "corrections_version": "missing",
+                "segment_0_text": " Original intro",
+                "segment_1_text": "Corrected outro",
+            },
+        )
+
+    assert response.status_code == 409
+    assert json.loads(corrections_path.read_text(encoding="utf-8")) == existing_corrections
+
+
+def test_transcript_corrections_reject_oversized_forms(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    transcript_path = work_dir / "transcript.json"
+    transcript_path.write_text(
+        json.dumps({"schema_version": 1, "segments": [{"id": 1, "text": " Short"}]}),
+        encoding="utf-8",
+    )
+    update_job(
+        db_path,
+        "job-1",
+        status="succeeded",
+        transcript_path=str(transcript_path),
+        current_stage="complete",
+        progress=100,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/transcript/corrections",
+            data={
+                "corrections_version": "missing",
+                "segment_0_text": "x" * (MAX_TRANSCRIPT_CORRECTION_FORM_BYTES + 1),
+            },
+        )
+
+    assert response.status_code == 413
+    assert not (work_dir / "transcript_corrections.json").exists()
 
 
 def test_transcript_corrections_return_404_when_transcript_is_missing(
