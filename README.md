@@ -69,6 +69,18 @@ The default preset lives in [config/default.yml](config/default.yml). It runs:
 
 The optional ML stages are disabled by default because their install/runtime requirements differ by machine.
 
+To enable local ML stages, install the optional dependencies:
+
+```bash
+pip install -e ".[ml]"
+```
+
+Transcription uses `faster-whisper` and stores `transcript.json` plus `transcript.vtt`.
+Diarization uses `pyannote.audio`, requires `HF_TOKEN` for common pretrained Hugging
+Face pipelines such as `pyannote/speaker-diarization-3.1`, and stores both
+`diarization.rttm` and `diarization.json`. Check the selected model license and
+expected CPU/GPU runtime before enabling these stages for production jobs.
+
 ## Scaling Notes
 
 For 10 people or fewer, the included SQLite + local worker model is enough to start. If you later need public multi-user hosting, the main changes are:

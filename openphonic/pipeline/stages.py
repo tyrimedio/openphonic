@@ -241,16 +241,33 @@ class DiarizationStage(PipelineStage):
                 'Install with pip install -e ".[ml]" or disable stages.diarization.'
             ) from exc
 
-        pipeline = Pipeline.from_pretrained(
-            stage.get("model") or settings.pyannote_model,
-            use_auth_token=settings.hf_token,
-        )
+        model_name = stage.get("model") or settings.pyannote_model
+        pipeline = _load_pyannote_pipeline(Pipeline, model_name, settings.hf_token)
         diarization = pipeline(str(input_path))
+        annotation = _diarization_annotation(diarization)
+
         rttm_path = work_dir / "diarization.rttm"
         with rttm_path.open("w", encoding="utf-8") as handle:
-            diarization.write_rttm(handle)
+            _write_diarization_rttm(diarization, annotation, handle)
         require_artifact(rttm_path, "Diarization", allow_empty=True)
-        return {"diarization_rttm": rttm_path}
+
+        segments = _diarization_segments(annotation)
+        json_path = work_dir / "diarization.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "engine": "pyannote.audio",
+                    "model": model_name,
+                    "speaker_count": len({segment["speaker"] for segment in segments}),
+                    "segments": segments,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        require_artifact(json_path, "Diarization")
+        return {"diarization_rttm": rttm_path, "diarization_json": json_path}
 
 
 def _timestamp(seconds: float) -> str:
@@ -278,6 +295,55 @@ def _segment_to_dict(segment: Any) -> dict[str, Any]:
         "text": segment.text,
         "words": [_word_to_dict(word) for word in (getattr(segment, "words", None) or [])],
     }
+
+
+def _diarization_annotation(diarization: Any) -> Any:
+    return getattr(diarization, "speaker_diarization", diarization)
+
+
+def _load_pyannote_pipeline(pipeline_class: Any, model_name: str, token: str) -> Any:
+    try:
+        return pipeline_class.from_pretrained(model_name, token=token)
+    except TypeError as exc:
+        if "token" not in str(exc):
+            raise
+    return pipeline_class.from_pretrained(model_name, use_auth_token=token)
+
+
+def _write_diarization_rttm(diarization: Any, annotation: Any, handle: Any) -> None:
+    writer = getattr(annotation, "write_rttm", None) or getattr(diarization, "write_rttm", None)
+    if writer is None:
+        raise StageError("Diarization completed but the result cannot be exported as RTTM.")
+    writer(handle)
+
+
+def _diarization_segments(annotation: Any) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for turn, track, speaker in _iter_diarization_turns(annotation):
+        segments.append(
+            {
+                "start": float(turn.start),
+                "end": float(turn.end),
+                "speaker": str(speaker),
+                "track": None if track is None else str(track),
+            }
+        )
+    return segments
+
+
+def _iter_diarization_turns(annotation: Any) -> Any:
+    itertracks = getattr(annotation, "itertracks", None)
+    if callable(itertracks):
+        yield from itertracks(yield_label=True)
+        return
+
+    for item in annotation:
+        if len(item) == 2:
+            turn, speaker = item
+            yield turn, None, speaker
+        else:
+            turn, track, speaker = item
+            yield turn, track, speaker
 
 
 def _segments_to_vtt(segments: list[dict[str, Any]]) -> str:
