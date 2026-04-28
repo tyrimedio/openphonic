@@ -54,8 +54,16 @@ TEXT_ARTIFACT_EXTENSIONS = {
 }
 TRANSCRIPT_CORRECTIONS_ARTIFACT = "transcript_corrections.json"
 SPEAKER_CORRECTIONS_ARTIFACT = "speaker_corrections.json"
+CUT_SUGGESTIONS_ARTIFACT = "cut_suggestions.json"
+CUT_REVIEW_ARTIFACT = "cut_review.json"
 MAX_CORRECTION_FORM_BYTES = 1024 * 1024
 MAX_CORRECTION_FIELDS = 10_000
+MAX_CUT_REVIEW_FORM_BYTES = 8 * 1024 * 1024
+MAX_CUT_REVIEW_FORM_FIELDS = 200_000
+MAX_CUT_REVIEW_ARTIFACT_BYTES = MAX_CUT_REVIEW_FORM_BYTES
+CUT_REVIEW_FORM_STATIC_FIELDS = 2
+CUT_REVIEW_FORM_FIELDS_PER_SUGGESTION = 3
+CUT_REVIEW_FORM_BYTES_PER_SUGGESTION = 256
 MAX_TRANSCRIPT_CORRECTION_FORM_BYTES = MAX_CORRECTION_FORM_BYTES
 MAX_TRANSCRIPT_CORRECTION_FIELDS = MAX_CORRECTION_FIELDS
 
@@ -200,6 +208,10 @@ def _corrections_version(
     job_id: str,
     artifact_name: str = TRANSCRIPT_CORRECTIONS_ARTIFACT,
 ) -> str:
+    return _artifact_version(job_id, artifact_name)
+
+
+def _artifact_version(job_id: str, artifact_name: str) -> str:
     try:
         path = job_artifact_path(get_settings(), job_id, artifact_name)
     except FileNotFoundError:
@@ -241,6 +253,48 @@ def _load_transcript_corrections(job_id: str) -> dict[str, Any] | None:
 
 def _load_speaker_corrections(job_id: str) -> dict[str, Any] | None:
     return _load_corrections_artifact(job_id, SPEAKER_CORRECTIONS_ARTIFACT, "Speaker")
+
+
+def _load_json_artifact(job_id: str, artifact_name: str, label: str) -> dict[str, Any]:
+    try:
+        path = job_artifact_path(get_settings(), job_id, artifact_name)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=f"{label} artifact not found.") from exc
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"{label} artifact is invalid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail=f"{label} artifact must be a JSON object.")
+    return payload
+
+
+def _load_optional_json_artifact(
+    job_id: str, artifact_name: str, label: str
+) -> dict[str, Any] | None:
+    try:
+        path = job_artifact_path(get_settings(), job_id, artifact_name)
+    except FileNotFoundError:
+        return None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail=f"{label} artifact is invalid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail=f"{label} artifact must be a JSON object.")
+    return payload
+
+
+def _load_cut_suggestions(job_id: str) -> dict[str, Any]:
+    return _load_json_artifact(job_id, CUT_SUGGESTIONS_ARTIFACT, "Cut suggestions")
+
+
+def _load_cut_review(job_id: str) -> dict[str, Any] | None:
+    return _load_optional_json_artifact(job_id, CUT_REVIEW_ARTIFACT, "Cut review")
 
 
 def _correction_text_by_index(corrections: dict[str, Any] | None) -> dict[int, str]:
@@ -416,15 +470,122 @@ def _build_speaker_corrections(
     }
 
 
-async def _read_limited_correction_form(
+def _review_decision_map(review: dict[str, Any] | None) -> dict[str, dict[str, str]]:
+    if review is None:
+        return {}
+
+    decisions: dict[str, dict[str, str]] = {}
+    for decision in review.get("decisions") or []:
+        if not isinstance(decision, dict):
+            continue
+        suggestion_id = decision.get("suggestion_id")
+        state = decision.get("decision")
+        if not isinstance(suggestion_id, str) or state not in {"approved", "rejected"}:
+            continue
+        note = decision.get("note")
+        decisions[suggestion_id] = {
+            "decision": state,
+            "note": note if isinstance(note, str) else "",
+        }
+    return decisions
+
+
+def _cut_suggestion_rows(
+    suggestions: dict[str, Any],
+    review: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    decisions = _review_decision_map(review)
+    rows: list[dict[str, Any]] = []
+    for index, suggestion in enumerate(suggestions.get("suggestions") or []):
+        if not isinstance(suggestion, dict):
+            continue
+        suggestion_id = suggestion.get("id")
+        if not isinstance(suggestion_id, str) or not suggestion_id:
+            continue
+        decision = decisions.get(suggestion_id, {"decision": "pending", "note": ""})
+        rows.append(
+            {
+                "index": index,
+                "id": suggestion_id,
+                "type": suggestion.get("type") or "-",
+                "source": suggestion.get("source") or "-",
+                "start": _format_seconds(suggestion.get("start")),
+                "end": _format_seconds(suggestion.get("end")),
+                "duration": _format_seconds(suggestion.get("duration")),
+                "start_seconds": suggestion.get("start"),
+                "end_seconds": suggestion.get("end"),
+                "duration_seconds": suggestion.get("duration"),
+                "text": suggestion.get("text") or "",
+                "reason": suggestion.get("reason") or "",
+                "decision": decision["decision"],
+                "note": decision["note"],
+            }
+        )
+    return rows
+
+
+def _build_cut_review(
+    suggestions: dict[str, Any],
+    artifact_name: str,
+    form: dict[str, str],
+) -> dict[str, Any]:
+    known_suggestions = {row["id"]: row for row in _cut_suggestion_rows(suggestions)}
+    decisions: list[dict[str, Any]] = []
+    index = 0
+    while f"suggestion_{index}_id" in form:
+        suggestion_id = form[f"suggestion_{index}_id"]
+        suggestion = known_suggestions.get(suggestion_id)
+        decision = form.get(f"suggestion_{index}_decision")
+        if suggestion is None or decision not in {"approved", "rejected"}:
+            index += 1
+            continue
+        note = form.get(f"suggestion_{index}_note", "").strip()
+        item: dict[str, Any] = {
+            "suggestion_id": suggestion_id,
+            "decision": decision,
+            "type": suggestion["type"],
+            "start": suggestion["start_seconds"],
+            "end": suggestion["end_seconds"],
+            "duration": suggestion["duration_seconds"],
+        }
+        if note:
+            item["note"] = note
+        decisions.append(item)
+        index += 1
+
+    return {
+        "schema_version": 1,
+        "source_artifact": artifact_name,
+        "decisions": decisions,
+    }
+
+
+def _cut_review_form_limits(suggestions: dict[str, Any]) -> tuple[int, int]:
+    suggestion_count = len(_cut_suggestion_rows(suggestions))
+    expected_fields = (
+        CUT_REVIEW_FORM_STATIC_FIELDS + suggestion_count * CUT_REVIEW_FORM_FIELDS_PER_SUGGESTION
+    )
+    expected_bytes = (
+        MAX_CORRECTION_FORM_BYTES + suggestion_count * CUT_REVIEW_FORM_BYTES_PER_SUGGESTION
+    )
+    return (
+        min(MAX_CUT_REVIEW_FORM_BYTES, max(MAX_CORRECTION_FORM_BYTES, expected_bytes)),
+        min(MAX_CUT_REVIEW_FORM_FIELDS, max(MAX_CORRECTION_FIELDS, expected_fields)),
+    )
+
+
+async def _read_limited_urlencoded_form(
     request: Request,
-    label: str = "Transcript",
+    label: str,
+    *,
+    max_bytes: int = MAX_CORRECTION_FORM_BYTES,
+    max_num_fields: int = MAX_CORRECTION_FIELDS,
 ) -> dict[str, str]:
     content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
     if content_type != "application/x-www-form-urlencoded":
         raise HTTPException(
             status_code=415,
-            detail=f"{label} corrections must be submitted as a URL-encoded form.",
+            detail=f"{label} must be submitted as a URL-encoded form.",
         )
 
     content_length = request.headers.get("content-length")
@@ -433,33 +594,49 @@ async def _read_limited_correction_form(
             declared_size = int(content_length)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid Content-Length.") from exc
-        if declared_size > MAX_CORRECTION_FORM_BYTES:
-            raise HTTPException(status_code=413, detail=f"{label} corrections form is too large.")
+        if declared_size > max_bytes:
+            raise HTTPException(status_code=413, detail=f"{label} form is too large.")
 
     body = bytearray()
     async for chunk in request.stream():
-        if len(body) + len(chunk) > MAX_CORRECTION_FORM_BYTES:
-            raise HTTPException(status_code=413, detail=f"{label} corrections form is too large.")
+        if len(body) + len(chunk) > max_bytes:
+            raise HTTPException(status_code=413, detail=f"{label} form is too large.")
         body.extend(chunk)
 
     try:
         decoded = body.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"{label} corrections form is not UTF-8."
-        ) from exc
+        raise HTTPException(status_code=400, detail=f"{label} form is not UTF-8.") from exc
 
     try:
         parsed = parse_qs(
             decoded,
             keep_blank_values=True,
-            max_num_fields=MAX_CORRECTION_FIELDS,
+            max_num_fields=max_num_fields,
         )
     except ValueError as exc:
-        raise HTTPException(
-            status_code=400, detail=f"{label} corrections form is invalid."
-        ) from exc
+        raise HTTPException(status_code=400, detail=f"{label} form is invalid.") from exc
     return {key: values[-1] if values else "" for key, values in parsed.items()}
+
+
+async def _read_limited_correction_form(
+    request: Request,
+    label: str = "Transcript",
+) -> dict[str, str]:
+    return await _read_limited_urlencoded_form(request, f"{label} corrections")
+
+
+def _ensure_fresh_artifact(
+    job_id: str,
+    submitted_version: str | None,
+    artifact_name: str,
+    label: str,
+) -> None:
+    if submitted_version != _artifact_version(job_id, artifact_name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"{label} changed. Reload the page and try again.",
+        )
 
 
 def _ensure_fresh_corrections(
@@ -468,11 +645,12 @@ def _ensure_fresh_corrections(
     artifact_name: str = TRANSCRIPT_CORRECTIONS_ARTIFACT,
     label: str = "Transcript",
 ) -> None:
-    if submitted_version != _corrections_version(job_id, artifact_name):
-        raise HTTPException(
-            status_code=409,
-            detail=f"{label} corrections changed. Reload the edit page and try again.",
-        )
+    _ensure_fresh_artifact(
+        job_id,
+        submitted_version,
+        artifact_name,
+        f"{label} corrections",
+    )
 
 
 def _artifact_preview(path: Path) -> dict[str, Any]:
@@ -531,6 +709,9 @@ def job_page(request: Request, job_id: str):
             "artifacts": [_artifact_payload(job_id, artifact) for artifact in artifacts],
             "speaker_url": f"/jobs/{job_id}/speakers"
             if "diarization.json" in artifact_names
+            else None,
+            "cut_review_url": f"/jobs/{job_id}/cuts"
+            if CUT_SUGGESTIONS_ARTIFACT in artifact_names
             else None,
             "common_artifacts": [
                 {
@@ -690,6 +871,69 @@ async def save_speaker_corrections(request: Request, job_id: str):
         encoding="utf-8",
     )
     return RedirectResponse(f"/jobs/{job_id}/speakers", status_code=303)
+
+
+@router.get("/jobs/{job_id}/cuts", response_class=HTMLResponse)
+def cut_review_page(request: Request, job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    suggestions = _load_cut_suggestions(job_id)
+    review = _load_cut_review(job_id)
+    rows = _cut_suggestion_rows(suggestions, review)
+    approved_count = sum(1 for row in rows if row["decision"] == "approved")
+    rejected_count = sum(1 for row in rows if row["decision"] == "rejected")
+    return templates.TemplateResponse(
+        request,
+        "cuts.html",
+        {
+            "request": request,
+            "job": record,
+            "suggestions": suggestions,
+            "rows": rows,
+            "approved_count": approved_count,
+            "rejected_count": rejected_count,
+            "pending_count": len(rows) - approved_count - rejected_count,
+            "suggestions_url": _artifact_url(job_id, CUT_SUGGESTIONS_ARTIFACT),
+            "review_url": _artifact_url(job_id, CUT_REVIEW_ARTIFACT)
+            if review is not None
+            else None,
+            "review_version": _artifact_version(job_id, CUT_REVIEW_ARTIFACT),
+            "suggestions_version": _artifact_version(job_id, CUT_SUGGESTIONS_ARTIFACT),
+            "save_url": f"/jobs/{job_id}/cuts/review",
+        },
+    )
+
+
+@router.post("/jobs/{job_id}/cuts/review")
+async def save_cut_review(request: Request, job_id: str):
+    _ensure_ready()
+    _require_job(job_id)
+    suggestions = _load_cut_suggestions(job_id)
+    max_bytes, max_num_fields = _cut_review_form_limits(suggestions)
+    form = await _read_limited_urlencoded_form(
+        request,
+        "Cut review",
+        max_bytes=max_bytes,
+        max_num_fields=max_num_fields,
+    )
+    _ensure_fresh_artifact(
+        job_id,
+        form.get("suggestions_version"),
+        CUT_SUGGESTIONS_ARTIFACT,
+        "Cut suggestions",
+    )
+    _ensure_fresh_artifact(
+        job_id,
+        form.get("review_version"),
+        CUT_REVIEW_ARTIFACT,
+        "Cut review",
+    )
+    review = _build_cut_review(suggestions, CUT_SUGGESTIONS_ARTIFACT, form)
+    serialized = json.dumps(review, indent=2)
+    if len(serialized.encode("utf-8")) > MAX_CUT_REVIEW_ARTIFACT_BYTES:
+        raise HTTPException(status_code=413, detail="Cut review artifact is too large.")
+    _corrections_path(job_id, CUT_REVIEW_ARTIFACT).write_text(serialized, encoding="utf-8")
+    return RedirectResponse(f"/jobs/{job_id}/cuts", status_code=303)
 
 
 @router.get("/jobs/{job_id}/artifacts/{artifact_name:path}", response_class=HTMLResponse)

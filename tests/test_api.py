@@ -47,6 +47,76 @@ def write_test_diarization(work_dir: Path) -> dict:
     return diarization
 
 
+def write_test_cut_suggestions(work_dir: Path) -> dict:
+    suggestions = {
+        "schema_version": 1,
+        "status": "not_applied",
+        "source_artifact": "transcript.json",
+        "configured_words": ["um", "uh"],
+        "min_silence_seconds": 0.75,
+        "suggestion_count": 2,
+        "suggestions": [
+            {
+                "id": "cut-0001",
+                "type": "filler_word",
+                "start": 0.0,
+                "end": 0.22,
+                "duration": 0.22,
+                "text": "Um",
+                "normalized_text": "um",
+                "segment_index": 0,
+                "word_index": 0,
+                "reason": "Matched configured filler word.",
+            },
+            {
+                "id": "cut-0002",
+                "type": "silence",
+                "start": 0.9,
+                "end": 1.8,
+                "duration": 0.9,
+                "source": "word_gap",
+                "before_segment_index": 0,
+                "before_word_index": 1,
+                "after_segment_index": 1,
+                "after_word_index": 0,
+                "reason": "Detected a timestamp gap longer than the configured threshold.",
+            },
+        ],
+    }
+    (work_dir / "cut_suggestions.json").write_text(json.dumps(suggestions), encoding="utf-8")
+    return suggestions
+
+
+def write_many_cut_suggestions(work_dir: Path, count: int) -> dict:
+    suggestions = {
+        "schema_version": 1,
+        "status": "not_applied",
+        "source_artifact": "transcript.json",
+        "configured_words": ["um"],
+        "min_silence_seconds": 0.75,
+        "suggestion_count": count,
+        "suggestions": [
+            {
+                "id": f"cut-{index:04d}",
+                "type": "filler_word",
+                "start": float(index),
+                "end": float(index) + 0.2,
+                "duration": 0.2,
+                "text": "um",
+                "reason": "Matched configured filler word.",
+            }
+            for index in range(count)
+        ],
+    }
+    (work_dir / "cut_suggestions.json").write_text(json.dumps(suggestions), encoding="utf-8")
+    return suggestions
+
+
+def artifact_version(path: Path) -> str:
+    stat = path.stat()
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+
 def test_index_route_renders(tmp_path, monkeypatch) -> None:
     configure_tmp_settings(tmp_path, monkeypatch)
 
@@ -501,6 +571,240 @@ def test_speaker_pages_return_404_when_diarization_is_missing(
 
     assert page_response.status_code == 404
     assert edit_response.status_code == 404
+    assert save_response.status_code == 404
+
+
+def test_cut_review_page_saves_review_artifact(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    suggestions = write_test_cut_suggestions(work_dir)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    with TestClient(create_app()) as client:
+        job_response = client.get("/jobs/job-1")
+        page_response = client.get("/jobs/job-1/cuts")
+        save_response = client.post(
+            "/jobs/job-1/cuts/review",
+            data={
+                "suggestions_version": artifact_version(work_dir / "cut_suggestions.json"),
+                "review_version": "missing",
+                "suggestion_0_id": "cut-0001",
+                "suggestion_0_decision": "approved",
+                "suggestion_0_note": "remove",
+                "suggestion_1_id": "cut-0002",
+                "suggestion_1_decision": "rejected",
+                "suggestion_1_note": "",
+            },
+            follow_redirects=False,
+        )
+        reviewed_response = client.get("/jobs/job-1/cuts")
+        artifact_response = client.get("/api/jobs/job-1/artifacts/cut_review.json")
+
+    review_path = work_dir / "cut_review.json"
+    assert job_response.status_code == 200
+    assert 'href="/jobs/job-1/cuts"' in job_response.text
+    assert page_response.status_code == 200
+    assert "Cut Review" in page_response.text
+    assert 'name="review_version" value="missing"' in page_response.text
+    assert 'name="suggestion_0_decision"' in page_response.text
+    assert "cut-0001" in page_response.text
+    assert save_response.status_code == 303
+    assert save_response.headers["location"] == "/jobs/job-1/cuts"
+    assert json.loads(review_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "source_artifact": "cut_suggestions.json",
+        "decisions": [
+            {
+                "suggestion_id": "cut-0001",
+                "decision": "approved",
+                "type": "filler_word",
+                "start": 0.0,
+                "end": 0.22,
+                "duration": 0.22,
+                "note": "remove",
+            },
+            {
+                "suggestion_id": "cut-0002",
+                "decision": "rejected",
+                "type": "silence",
+                "start": 0.9,
+                "end": 1.8,
+                "duration": 0.9,
+            },
+        ],
+    }
+    saved_suggestions = json.loads((work_dir / "cut_suggestions.json").read_text(encoding="utf-8"))
+    assert saved_suggestions == suggestions
+    assert reviewed_response.status_code == 200
+    assert "2 decided" in reviewed_response.text
+    assert "Review JSON" in reviewed_response.text
+    assert artifact_response.status_code == 200
+
+
+def test_cut_review_rejects_stale_review_saves(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    write_test_cut_suggestions(work_dir)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    existing_review = {
+        "schema_version": 1,
+        "source_artifact": "cut_suggestions.json",
+        "decisions": [{"suggestion_id": "cut-0001", "decision": "approved"}],
+    }
+    review_path = work_dir / "cut_review.json"
+    review_path.write_text(json.dumps(existing_review), encoding="utf-8")
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/cuts/review",
+            data={
+                "suggestions_version": artifact_version(work_dir / "cut_suggestions.json"),
+                "review_version": "missing",
+                "suggestion_0_id": "cut-0001",
+                "suggestion_0_decision": "rejected",
+            },
+        )
+
+    assert response.status_code == 409
+    assert json.loads(review_path.read_text(encoding="utf-8")) == existing_review
+
+
+def test_cut_review_allows_large_suggestion_forms(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    suggestion_count = 3_333
+    write_many_cut_suggestions(work_dir, suggestion_count)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    form = {
+        "suggestions_version": artifact_version(work_dir / "cut_suggestions.json"),
+        "review_version": "missing",
+    }
+    for index in range(suggestion_count):
+        form[f"suggestion_{index}_id"] = f"cut-{index:04d}"
+        form[f"suggestion_{index}_decision"] = "approved" if index == 0 else "pending"
+        form[f"suggestion_{index}_note"] = ""
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/cuts/review",
+            data=form,
+            follow_redirects=False,
+        )
+
+    review = json.loads((work_dir / "cut_review.json").read_text(encoding="utf-8"))
+    assert response.status_code == 303
+    assert response.headers["location"] == "/jobs/job-1/cuts"
+    assert review["decisions"] == [
+        {
+            "suggestion_id": "cut-0000",
+            "decision": "approved",
+            "type": "filler_word",
+            "start": 0.0,
+            "end": 0.2,
+            "duration": 0.2,
+        }
+    ]
+
+
+def test_cut_review_allows_large_decided_review_artifacts(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    suggestion_count = 7_000
+    write_many_cut_suggestions(work_dir, suggestion_count)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    form = {
+        "suggestions_version": artifact_version(work_dir / "cut_suggestions.json"),
+        "review_version": "missing",
+    }
+    for index in range(suggestion_count):
+        form[f"suggestion_{index}_id"] = f"cut-{index:04d}"
+        form[f"suggestion_{index}_decision"] = "approved"
+        form[f"suggestion_{index}_note"] = ""
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/cuts/review",
+            data=form,
+            follow_redirects=False,
+        )
+
+    review = json.loads((work_dir / "cut_review.json").read_text(encoding="utf-8"))
+    assert response.status_code == 303
+    assert response.headers["location"] == "/jobs/job-1/cuts"
+    assert len(review["decisions"]) == suggestion_count
+    assert review["decisions"][0]["suggestion_id"] == "cut-0000"
+    assert review["decisions"][-1]["suggestion_id"] == "cut-6999"
+    assert len(json.dumps(review, indent=2).encode("utf-8")) > 1024 * 1024
+
+
+def test_cut_review_rejects_stale_suggestions(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    write_test_cut_suggestions(work_dir)
+    stale_version = artifact_version(work_dir / "cut_suggestions.json")
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+    changed_suggestions = write_test_cut_suggestions(work_dir)
+    changed_suggestions["suggestions"].append(
+        {
+            "id": "cut-0003",
+            "type": "filler_word",
+            "start": 2.0,
+            "end": 2.2,
+            "duration": 0.2,
+            "text": "uh",
+        }
+    )
+    (work_dir / "cut_suggestions.json").write_text(
+        json.dumps(changed_suggestions), encoding="utf-8"
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/cuts/review",
+            data={
+                "suggestions_version": stale_version,
+                "review_version": "missing",
+                "suggestion_0_id": "cut-0001",
+                "suggestion_0_decision": "approved",
+            },
+        )
+
+    assert response.status_code == 409
+    assert not (work_dir / "cut_review.json").exists()
+
+
+def test_cut_review_returns_404_when_suggestions_are_missing(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+
+    with TestClient(create_app()) as client:
+        page_response = client.get("/jobs/job-1/cuts")
+        save_response = client.post(
+            "/jobs/job-1/cuts/review",
+            data={"suggestions_version": "missing", "review_version": "missing"},
+        )
+
+    assert page_response.status_code == 404
     assert save_response.status_code == 404
 
 
