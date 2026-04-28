@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from openphonic.core.settings import Settings
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+@dataclass(frozen=True)
+class JobArtifact:
+    name: str
+    path: Path
+    size_bytes: int
 
 
 def ensure_storage(settings: Settings) -> None:
@@ -34,6 +42,49 @@ def job_dir(settings: Settings, job_id: str) -> Path:
     directory = settings.jobs_dir / job_id
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def _job_root(settings: Settings, job_id: str) -> Path:
+    if not job_id or Path(job_id).name != job_id or job_id in {".", ".."}:
+        raise ValueError("Invalid job id.")
+    return settings.jobs_dir / job_id
+
+
+def list_job_artifacts(settings: Settings, job_id: str) -> list[JobArtifact]:
+    root = _job_root(settings, job_id)
+    if not root.exists():
+        return []
+    if not root.is_dir():
+        raise ValueError("Job artifact root is not a directory.")
+
+    artifacts: list[JobArtifact] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        artifacts.append(
+            JobArtifact(
+                name=path.relative_to(root).as_posix(),
+                path=path,
+                size_bytes=path.stat().st_size,
+            )
+        )
+    return artifacts
+
+
+def job_artifact_path(settings: Settings, job_id: str, artifact_name: str) -> Path:
+    root = _job_root(settings, job_id).resolve()
+    requested = Path(artifact_name)
+    if not artifact_name or requested.is_absolute() or ".." in requested.parts:
+        raise ValueError("Invalid artifact path.")
+
+    path = (root / requested).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Invalid artifact path.") from exc
+    if not path.is_file():
+        raise FileNotFoundError(artifact_name)
+    return path
 
 
 async def save_upload_file(upload_file, destination: Path, max_bytes: int) -> int:

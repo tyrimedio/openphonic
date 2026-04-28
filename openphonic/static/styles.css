@@ -236,6 +236,28 @@ dd {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  margin-bottom: 24px;
+}
+
+.actions.compact {
+  margin-bottom: 0;
+}
+
+.mono {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.artifact-table td:nth-child(2),
+.artifact-table th:nth-child(2) {
+  width: 96px;
+  white-space: nowrap;
+}
+
+.artifact-table td:last-child,
+.artifact-table th:last-child {
+  width: 72px;
+  text-align: right;
 }
 
 @media (max-width: 760px) {

@@ -2,7 +2,14 @@ import asyncio
 
 import pytest
 
-from openphonic.services.storage import safe_filename, save_upload_file
+from openphonic.core.settings import Settings
+from openphonic.services.storage import (
+    job_artifact_path,
+    job_dir,
+    list_job_artifacts,
+    safe_filename,
+    save_upload_file,
+)
 
 
 class FakeUpload:
@@ -37,3 +44,53 @@ def test_save_upload_file_writes_chunks(tmp_path) -> None:
 
     assert written == 6
     assert destination.read_bytes() == b"abcdef"
+
+
+def test_list_job_artifacts_returns_relative_file_names(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "openphonic.sqlite3",
+        pipeline_config=tmp_path / "config.yml",
+        max_upload_mb=10,
+        public_base_url="http://127.0.0.1:8000",
+        hf_token=None,
+        whisper_model="small",
+        whisper_device="auto",
+        pyannote_model="pyannote/speaker-diarization-3.1",
+        deepfilternet_bin="deepFilter",
+    )
+    root = job_dir(settings, "job-1")
+    (root / "commands.jsonl").write_text("{}", encoding="utf-8")
+    nested = root / "nested"
+    nested.mkdir()
+    (nested / "artifact.txt").write_text("artifact", encoding="utf-8")
+
+    artifacts = list_job_artifacts(settings, "job-1")
+
+    assert [artifact.name for artifact in artifacts] == [
+        "commands.jsonl",
+        "nested/artifact.txt",
+    ]
+    assert artifacts[0].size_bytes == 2
+
+
+def test_job_artifact_path_rejects_traversal(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "openphonic.sqlite3",
+        pipeline_config=tmp_path / "config.yml",
+        max_upload_mb=10,
+        public_base_url="http://127.0.0.1:8000",
+        hf_token=None,
+        whisper_model="small",
+        whisper_device="auto",
+        pyannote_model="pyannote/speaker-diarization-3.1",
+        deepfilternet_bin="deepFilter",
+    )
+    root = job_dir(settings, "job-1")
+    (root / "commands.jsonl").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Invalid artifact path"):
+        job_artifact_path(settings, "job-1", "../openphonic.sqlite3")
+
+    assert job_artifact_path(settings, "job-1", "commands.jsonl") == root / "commands.jsonl"
