@@ -160,6 +160,31 @@ def test_create_job_rejects_unknown_preset(tmp_path, monkeypatch) -> None:
     assert response.json()["detail"] == "Unknown pipeline preset: missing"
 
 
+def test_create_job_rejects_malformed_custom_preset(tmp_path, monkeypatch) -> None:
+    configure_tmp_settings(tmp_path, monkeypatch)
+    preset_dir = get_settings().preset_dir
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "broken.yml").write_text("name: [broken\n", encoding="utf-8")
+    started: list[str] = []
+
+    def fake_run_job(job_id: str) -> None:
+        started.append(job_id)
+
+    monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs",
+            data={"preset": "custom:broken"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown pipeline preset: custom:broken"
+    assert started == []
+
+
 def test_create_job_stores_selected_preset(tmp_path, monkeypatch) -> None:
     db_path = configure_tmp_settings(tmp_path, monkeypatch)
     started: list[str] = []

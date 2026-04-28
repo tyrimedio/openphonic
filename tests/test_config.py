@@ -73,6 +73,15 @@ stages:
         encoding="utf-8",
     )
     (preset_dir / "ignored preset.yml").write_text("name: ignored\n", encoding="utf-8")
+    (preset_dir / "broken.yml").write_text("name: [broken\n", encoding="utf-8")
+    (preset_dir / "bad-target.yml").write_text(
+        """
+name: bad-target
+target:
+  unsupported: true
+""",
+        encoding="utf-8",
+    )
 
     presets = available_presets(DEFAULT_PIPELINE_CONFIG, preset_dir)
     custom = preset_by_id(
@@ -98,6 +107,12 @@ stages:
     assert config.name == "daily-show"
     assert config.enabled("silence_trim", default=True) is False
     assert config.enabled("loudness") is True
+    with pytest.raises(ValueError, match="Unknown pipeline preset"):
+        preset_by_id(
+            "custom:broken",
+            default_path=DEFAULT_PIPELINE_CONFIG,
+            preset_dir=preset_dir,
+        )
 
 
 def test_unknown_preset_is_rejected() -> None:

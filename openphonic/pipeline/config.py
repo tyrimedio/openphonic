@@ -139,8 +139,11 @@ def _custom_presets(preset_dir: str | Path | None) -> list[PipelinePreset]:
         preset_id = f"custom:{stem}"
         if preset_id in seen:
             continue
+        metadata = _custom_preset_metadata(path)
+        if metadata is None:
+            continue
         seen.add(preset_id)
-        label, description = _custom_preset_metadata(path)
+        label, description = metadata
         presets.append(
             PipelinePreset(
                 id=preset_id,
@@ -152,15 +155,21 @@ def _custom_presets(preset_dir: str | Path | None) -> list[PipelinePreset]:
     return presets
 
 
-def _custom_preset_metadata(path: Path) -> tuple[str, str]:
+def _custom_preset_metadata(path: Path) -> tuple[str, str] | None:
     label = _label_from_stem(path.stem)
     description = f"Custom preset from {path.name}."
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, yaml.YAMLError, UnicodeDecodeError):
-        return label, description
+        return None
     if not isinstance(raw, dict):
-        return label, description
+        return None
+    try:
+        TargetFormat(**(raw.get("target") or {}))
+    except TypeError:
+        return None
+    if not isinstance(raw.get("stages") or {}, dict):
+        return None
 
     preset_metadata = raw.get("preset")
     if isinstance(preset_metadata, dict):
