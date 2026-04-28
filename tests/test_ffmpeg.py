@@ -10,12 +10,13 @@ from openphonic.pipeline.ffmpeg import (
     build_apply_cuts_command,
     build_ffprobe_command,
     build_ingest_command,
+    build_intro_outro_command,
     build_loudnorm_apply_command,
     build_silence_trim_command,
     parse_loudnorm_json,
     parse_media_metadata,
 )
-from openphonic.pipeline.stages import DeepFilterNetStage, IngestStage, StageError
+from openphonic.pipeline.stages import DeepFilterNetStage, IngestStage, IntroOutroStage, StageError
 
 
 def test_build_ingest_command_sets_working_format() -> None:
@@ -158,6 +159,34 @@ def test_build_apply_cuts_command_rejects_invalid_ranges() -> None:
         )
 
 
+def test_build_intro_outro_command_concatenates_configured_segments() -> None:
+    command = build_intro_outro_command(
+        Path("program.wav"),
+        Path("out.wav"),
+        target=TargetFormat(),
+        intro_path=Path("intro.wav"),
+        outro_path=Path("outro.wav"),
+    )
+
+    filter_spec = command[command.index("-filter_complex") + 1]
+    assert command[:4] == ["ffmpeg", "-hide_banner", "-nostdin", "-y"]
+    assert command[command.index("-i") + 1] == "intro.wav"
+    assert "program.wav" in command
+    assert "outro.wav" in command
+    assert "aformat=sample_fmts=s16:sample_rates=48000:channel_layouts=stereo" in filter_spec
+    assert "[a0][a1][a2]concat=n=3:v=0:a=1[out]" in filter_spec
+    assert command[-1] == "out.wav"
+
+
+def test_build_intro_outro_command_rejects_missing_brand_assets() -> None:
+    with pytest.raises(FFmpegError, match="At least one intro or outro"):
+        build_intro_outro_command(
+            Path("program.wav"),
+            Path("out.wav"),
+            target=TargetFormat(),
+        )
+
+
 def test_stage_fails_when_command_does_not_produce_artifact(tmp_path, monkeypatch) -> None:
     input_path = tmp_path / "input.wav"
     input_path.write_bytes(b"audio")
@@ -169,6 +198,61 @@ def test_stage_fails_when_command_does_not_produce_artifact(tmp_path, monkeypatc
 
     with pytest.raises(StageError, match="Ingest stage did not produce expected artifact"):
         IngestStage(config=PipelineConfig("test")).run(input_path, tmp_path)
+
+
+def test_intro_outro_stage_resolves_preset_relative_assets(tmp_path, monkeypatch) -> None:
+    preset_path = tmp_path / "presets" / "daily-show.yml"
+    preset_path.parent.mkdir()
+    intro_path = preset_path.parent / "intro.wav"
+    outro_path = tmp_path / "assets" / "outro.wav"
+    input_path = tmp_path / "input.wav"
+    work_dir = tmp_path / "work"
+    intro_path.write_bytes(b"intro")
+    outro_path.parent.mkdir()
+    outro_path.write_bytes(b"outro")
+    input_path.write_bytes(b"program")
+    work_dir.mkdir()
+    seen_command: list[str] = []
+
+    def fake_run_command(args, log_path=None):
+        _ = log_path
+        seen_command.extend(args)
+        Path(args[-1]).write_bytes(b"branded")
+
+    monkeypatch.setattr("openphonic.pipeline.stages.run_command", fake_run_command)
+
+    output_path = IntroOutroStage(
+        PipelineConfig(
+            name="test",
+            source_path=preset_path,
+            stages={
+                "intro_outro": {
+                    "enabled": True,
+                    "intro_path": "intro.wav",
+                    "outro_path": str(outro_path),
+                }
+            },
+        )
+    ).run(input_path, work_dir)
+
+    assert output_path == work_dir / "05_intro_outro.wav"
+    assert output_path.read_bytes() == b"branded"
+    assert str(intro_path) in seen_command
+    assert str(input_path) in seen_command
+    assert str(outro_path) in seen_command
+
+
+def test_intro_outro_stage_rejects_missing_assets(tmp_path) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"program")
+
+    with pytest.raises(StageError, match="intro_path does not exist"):
+        IntroOutroStage(
+            PipelineConfig(
+                name="test",
+                stages={"intro_outro": {"enabled": True, "intro_path": "missing.wav"}},
+            )
+        ).run(input_path, tmp_path)
 
 
 def test_deepfilternet_stage_passes_configured_attenuation(tmp_path, monkeypatch) -> None:

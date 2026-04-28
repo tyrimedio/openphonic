@@ -13,6 +13,7 @@ from openphonic.core.settings import get_settings
 from openphonic.pipeline.config import PipelineConfig
 from openphonic.pipeline.ffmpeg import (
     build_ingest_command,
+    build_intro_outro_command,
     build_loudnorm_apply_command,
     build_loudnorm_probe_command,
     build_silence_trim_command,
@@ -149,6 +150,40 @@ class SilenceTrimStage(PipelineStage):
             log_path=self.command_log_path,
         )
         return require_artifact(output_path, "Silence trim")
+
+
+class IntroOutroStage(PipelineStage):
+    def run(self, input_path: Path, work_dir: Path) -> Path:
+        stage = self.config.stage("intro_outro")
+        intro_path = self._asset_path(stage.get("intro_path"), "intro_path")
+        outro_path = self._asset_path(stage.get("outro_path"), "outro_path")
+        if intro_path is None and outro_path is None:
+            raise StageError("Intro/outro stage requires intro_path or outro_path.")
+
+        output_path = work_dir / "05_intro_outro.wav"
+        run_command(
+            build_intro_outro_command(
+                input_path,
+                output_path,
+                target=self.config.target,
+                intro_path=intro_path,
+                outro_path=outro_path,
+            ),
+            log_path=self.command_log_path,
+        )
+        return require_artifact(output_path, "Intro/outro")
+
+    def _asset_path(self, value: Any, field_name: str) -> Path | None:
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str):
+            raise StageError(f"Intro/outro {field_name} must be a filesystem path.")
+        path = self.config.resolve_path(value)
+        if not path.exists():
+            raise StageError(f"Intro/outro {field_name} does not exist: {path}")
+        if not path.is_file():
+            raise StageError(f"Intro/outro {field_name} is not a file: {path}")
+        return path
 
 
 class FillerRemovalStage(PipelineStage):

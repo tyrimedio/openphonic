@@ -14,6 +14,7 @@ from openphonic.pipeline.stages import (
     DiarizationStage,
     FillerRemovalStage,
     IngestStage,
+    IntroOutroStage,
     LoudnessStage,
     SilenceTrimStage,
     StageError,
@@ -109,6 +110,11 @@ class PipelineRunner:
                     current, work_dir
                 )
                 artifacts["silence_trimmed_wav"] = current
+
+            if self.config.enabled("intro_outro"):
+                self._progress("intro_outro", 62)
+                current = IntroOutroStage(self.config, self.command_log_path).run(current, work_dir)
+                artifacts["intro_outro_wav"] = current
 
             if self.config.enabled("loudness", default=True):
                 self._progress("loudness", 75)

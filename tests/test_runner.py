@@ -24,6 +24,19 @@ class FakeIngestStage:
         return output_path
 
 
+class FakeIntroOutroStage:
+    seen_input_path: Path | None = None
+
+    def __init__(self, config: PipelineConfig, command_log_path: Path | None = None) -> None:
+        _ = config, command_log_path
+
+    def run(self, input_path: Path, work_dir: Path) -> Path:
+        FakeIntroOutroStage.seen_input_path = input_path
+        output_path = work_dir / "05_intro_outro.wav"
+        output_path.write_bytes(b"branded")
+        return output_path
+
+
 class FailingTranscriptionStage:
     def __init__(self, config: PipelineConfig, command_log_path: Path | None = None) -> None:
         _ = config, command_log_path
@@ -148,6 +161,53 @@ def test_runner_validates_media_and_writes_metadata_artifact(tmp_path, monkeypat
     assert manifest["artifacts"]["final_audio"] == str(result.output_path)
     assert progress[:2] == [("metadata", 8), ("ingest", 10)]
     assert FakeIngestStage.seen_command_log_path == command_log_path
+
+
+def test_runner_inserts_intro_outro_before_final_audio(tmp_path, monkeypatch) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"not real audio")
+
+    def fake_probe_media(path: Path, log_path: Path | None = None) -> MediaMetadata:
+        _ = log_path
+        return MediaMetadata(
+            path=path,
+            format_name="wav",
+            duration_seconds=1.0,
+            audio_streams=[
+                AudioStreamMetadata(
+                    index=0,
+                    codec_name="pcm_s16le",
+                    sample_rate=48000,
+                    channels=2,
+                    duration_seconds=1.0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr("openphonic.pipeline.runner.probe_media", fake_probe_media)
+    monkeypatch.setattr("openphonic.pipeline.runner.IngestStage", FakeIngestStage)
+    monkeypatch.setattr("openphonic.pipeline.runner.IntroOutroStage", FakeIntroOutroStage)
+
+    config = PipelineConfig(
+        name="test",
+        stages={
+            "silence_trim": {"enabled": False},
+            "intro_outro": {"enabled": True, "intro_path": "intro.wav"},
+            "loudness": {"enabled": False},
+        },
+    )
+    progress: list[tuple[str, int]] = []
+
+    result = PipelineRunner(
+        config,
+        progress_callback=lambda stage, percent: progress.append((stage, percent)),
+    ).run(input_path, tmp_path / "work")
+
+    assert FakeIntroOutroStage.seen_input_path == tmp_path / "work" / "01_ingest.wav"
+    assert result.output_path == tmp_path / "work" / "05_intro_outro.wav"
+    assert result.artifacts["intro_outro_wav"] == result.output_path
+    assert result.artifacts["final_audio"] == result.output_path
+    assert ("intro_outro", 62) in progress
 
 
 def test_runner_writes_failed_manifest_with_partial_artifacts(tmp_path, monkeypatch) -> None:

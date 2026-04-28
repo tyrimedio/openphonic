@@ -23,6 +23,10 @@ stages:
     start_threshold_db: -50
     stop_threshold_db: -50
     min_silence_seconds: 0.35
+  intro_outro:
+    enabled: false
+    intro_path: null
+    outro_path: null
   loudness:
     enabled: true
     integrated_lufs: -16

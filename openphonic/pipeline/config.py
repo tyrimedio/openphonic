@@ -38,20 +38,33 @@ class PipelineConfig:
     name: str
     target: TargetFormat = field(default_factory=TargetFormat)
     stages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    source_path: Path | None = None
 
     @classmethod
     def from_path(cls, path: str | Path) -> PipelineConfig:
-        with Path(path).expanduser().open("r", encoding="utf-8") as handle:
+        config_path = Path(path).expanduser()
+        with config_path.open("r", encoding="utf-8") as handle:
             raw = yaml.safe_load(handle) or {}
         target = TargetFormat(**(raw.get("target") or {}))
         stages = raw.get("stages") or {}
-        return cls(name=raw.get("name", "default"), target=target, stages=stages)
+        return cls(
+            name=raw.get("name", "default"),
+            target=target,
+            stages=stages,
+            source_path=config_path,
+        )
 
     def stage(self, name: str) -> dict[str, Any]:
         return self.stages.get(name, {})
 
     def enabled(self, name: str, default: bool = False) -> bool:
         return bool(self.stage(name).get("enabled", default))
+
+    def resolve_path(self, value: str | Path) -> Path:
+        path = Path(value).expanduser()
+        if path.is_absolute() or self.source_path is None:
+            return path
+        return self.source_path.parent / path
 
 
 BUILTIN_PRESETS = (
@@ -173,6 +186,8 @@ def _custom_preset_metadata(path: Path) -> tuple[str, str] | None:
         return None
     if any(not isinstance(stage_config, dict) for stage_config in stages.values()):
         return None
+    if not _custom_stage_assets_are_valid(stages.get("intro_outro"), path):
+        return None
 
     preset_metadata = raw.get("preset")
     if isinstance(preset_metadata, dict):
@@ -191,3 +206,24 @@ def _custom_preset_metadata(path: Path) -> tuple[str, str] | None:
 
 def _label_from_stem(stem: str) -> str:
     return stem.replace("_", " ").replace("-", " ").strip().title() or stem
+
+
+def _custom_stage_assets_are_valid(stage: Any, config_path: Path) -> bool:
+    if not isinstance(stage, dict) or not stage.get("enabled"):
+        return True
+    configured_paths = [
+        stage.get(field_name)
+        for field_name in ("intro_path", "outro_path")
+        if stage.get(field_name) not in (None, "")
+    ]
+    if not configured_paths:
+        return False
+    for configured_path in configured_paths:
+        if not isinstance(configured_path, str):
+            return False
+        asset_path = Path(configured_path).expanduser()
+        if not asset_path.is_absolute():
+            asset_path = config_path.parent / asset_path
+        if not asset_path.is_file():
+            return False
+    return True

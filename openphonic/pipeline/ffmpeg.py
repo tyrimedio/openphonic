@@ -276,6 +276,58 @@ def build_apply_cuts_command(
     ]
 
 
+def _target_channel_layout(target: TargetFormat) -> str:
+    if target.channels == 1:
+        return "mono"
+    if target.channels == 2:
+        return "stereo"
+    raise FFmpegError("Intro/outro insertion supports mono or stereo target audio.")
+
+
+def build_intro_outro_command(
+    input_path: Path,
+    output_path: Path,
+    *,
+    target: TargetFormat,
+    intro_path: Path | None = None,
+    outro_path: Path | None = None,
+) -> list[str]:
+    segments = [path for path in (intro_path, input_path, outro_path) if path is not None]
+    if len(segments) == 1:
+        raise FFmpegError("At least one intro or outro path is required.")
+
+    input_args: list[str] = []
+    filter_parts: list[str] = []
+    labels: list[str] = []
+    channel_layout = _target_channel_layout(target)
+    for index, segment in enumerate(segments):
+        input_args.extend(["-i", str(segment)])
+        label = f"a{index}"
+        labels.append(f"[{label}]")
+        filter_parts.append(
+            f"[{index}:a]"
+            f"aformat=sample_fmts=s16:sample_rates={target.sample_rate}:"
+            f"channel_layouts={channel_layout},"
+            f"asetpts=N/SR/TB[{label}]"
+        )
+    filter_parts.append(f"{''.join(labels)}concat=n={len(segments)}:v=0:a=1[out]")
+
+    return [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+        "-y",
+        *input_args,
+        "-filter_complex",
+        ";".join(filter_parts),
+        "-map",
+        "[out]",
+        "-c:a",
+        "pcm_s16le",
+        str(output_path),
+    ]
+
+
 def _parse_float(value: Any) -> float | None:
     if value in (None, "N/A"):
         return None
