@@ -110,13 +110,6 @@ class PipelineRunner:
                 )
                 artifacts["silence_trimmed_wav"] = current
 
-            if self.config.enabled("filler_removal"):
-                self._progress("filler_removal", 60)
-                current = FillerRemovalStage(self.config, self.command_log_path).run(
-                    current, work_dir
-                )
-                artifacts["filler_removed_audio"] = current
-
             if self.config.enabled("loudness", default=True):
                 self._progress("loudness", 75)
                 current = LoudnessStage(self.config, self.command_log_path).run(current, work_dir)
@@ -126,6 +119,15 @@ class PipelineRunner:
                 self._progress("transcription", 88)
                 artifacts.update(
                     TranscriptionStage(self.config, self.command_log_path).run(current, work_dir)
+                )
+
+            if self.config.enabled("filler_removal"):
+                self._progress("cut_suggestions", 92)
+                artifacts.update(
+                    FillerRemovalStage(self.config, self.command_log_path).run(
+                        artifacts.get("transcript_json"),
+                        work_dir,
+                    )
                 )
 
             if self.config.enabled("diarization"):
