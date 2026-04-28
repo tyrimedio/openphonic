@@ -63,10 +63,11 @@ The default preset lives in [config/default.yml](config/default.yml). It runs:
 3. Optional DeepFilterNet noise reduction
 4. Optional Demucs separation
 5. Optional silence trimming
-6. FFmpeg two-pass loudness normalization
-7. Optional faster-whisper transcription
-8. Optional non-destructive cut suggestions from transcript timestamps
-9. Optional pyannote diarization
+6. Optional intro/outro insertion from local media
+7. FFmpeg two-pass loudness normalization
+8. Optional faster-whisper transcription
+9. Optional non-destructive cut suggestions from transcript timestamps
+10. Optional pyannote diarization
 
 The optional ML stages are disabled by default because their install/runtime requirements differ by machine.
 
@@ -93,9 +94,16 @@ target:
   sample_rate: 48000
   channels: 2
 stages:
+  intro_outro:
+    enabled: true
+    intro_path: ./assets/intro.wav
+    outro_path: ./assets/outro.wav
   loudness:
     enabled: true
 ```
+
+Relative intro/outro paths are resolved from the custom preset file location, so
+a per-show preset can live alongside its local branding audio files.
 
 To enable local ML stages, install the optional dependencies:
 

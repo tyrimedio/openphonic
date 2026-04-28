@@ -6,7 +6,12 @@ from pathlib import Path
 import pytest
 
 from openphonic.pipeline.config import PipelineConfig, TargetFormat
-from openphonic.pipeline.ffmpeg import build_apply_cuts_command, probe_media, run_command
+from openphonic.pipeline.ffmpeg import (
+    build_apply_cuts_command,
+    build_intro_outro_command,
+    probe_media,
+    run_command,
+)
 from openphonic.pipeline.runner import PipelineRunner
 
 pytestmark = pytest.mark.skipif(
@@ -15,7 +20,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _make_sine_wave(path: Path) -> None:
+def _make_sine_wave(path: Path, *, duration: float = 1.0, frequency: int = 1000) -> None:
     completed = subprocess.run(
         [
             "ffmpeg",
@@ -25,7 +30,7 @@ def _make_sine_wave(path: Path) -> None:
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=1000:duration=1",
+            f"sine=frequency={frequency}:duration={duration}",
             "-ar",
             "44100",
             "-ac",
@@ -120,3 +125,30 @@ def test_apply_cuts_command_processes_real_audio(tmp_path) -> None:
     assert output_metadata.duration_seconds is not None
     assert output_metadata.duration_seconds < input_metadata.duration_seconds - 0.3
     assert output_metadata.duration_seconds > 0.3
+
+
+def test_intro_outro_command_processes_real_audio(tmp_path) -> None:
+    intro_path = tmp_path / "intro.wav"
+    input_path = tmp_path / "input.wav"
+    outro_path = tmp_path / "outro.wav"
+    output_path = tmp_path / "branded.wav"
+    _make_sine_wave(intro_path, duration=0.2, frequency=440)
+    _make_sine_wave(input_path, duration=0.5, frequency=880)
+    _make_sine_wave(outro_path, duration=0.3, frequency=660)
+
+    run_command(
+        build_intro_outro_command(
+            input_path,
+            output_path,
+            target=TargetFormat(codec="pcm_s16le", container="wav"),
+            intro_path=intro_path,
+            outro_path=outro_path,
+        )
+    )
+
+    output_metadata = probe_media(output_path)
+    assert output_path.stat().st_size > 0
+    assert output_metadata.duration_seconds is not None
+    assert 0.95 <= output_metadata.duration_seconds <= 1.05
+    assert output_metadata.audio_streams[0].sample_rate == 48000
+    assert output_metadata.audio_streams[0].channels == 2
