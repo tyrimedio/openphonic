@@ -311,6 +311,10 @@ def _load_cut_apply_manifest(job_id: str) -> dict[str, Any] | None:
 def _cut_apply_output_url(job_id: str, manifest: dict[str, Any] | None) -> str | None:
     if manifest is None or manifest.get("status") != "succeeded":
         return None
+    if manifest.get("suggestions_version") != _artifact_version(job_id, CUT_SUGGESTIONS_ARTIFACT):
+        return None
+    if manifest.get("review_version") != _artifact_version(job_id, CUT_REVIEW_ARTIFACT):
+        return None
     output_artifact = manifest.get("output_artifact")
     if not isinstance(output_artifact, str):
         return None

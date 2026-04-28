@@ -9,6 +9,7 @@ from openphonic.services.cuts import (
     CUT_APPLY_MANIFEST_ARTIFACT,
     ApprovedCut,
     CutApplyError,
+    _write_cut_apply_manifest,
     apply_approved_cuts,
     approved_cuts_from_review,
     merged_cut_ranges,
@@ -107,3 +108,28 @@ def test_apply_approved_cuts_writes_reviewed_output_and_manifest(tmp_path, monke
     assert manifest["suggestions_version"] == "suggestions-v1"
     assert manifest["review_version"] == "review-v1"
     assert "between(t,0,0.2)" in seen_commands[0][seen_commands[0].index("-af") + 1]
+
+
+def test_cut_apply_manifest_write_uses_atomic_replace(tmp_path, monkeypatch) -> None:
+    manifest_path = tmp_path / CUT_APPLY_MANIFEST_ARTIFACT
+    replacements: list[tuple[Path, Path]] = []
+    original_replace = Path.replace
+
+    def tracking_replace(self: Path, target: Path) -> Path:
+        replacements.append((self, Path(target)))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", tracking_replace)
+
+    _write_cut_apply_manifest(manifest_path, {"schema_version": 1, "status": "succeeded"})
+
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "status": "succeeded",
+    }
+    assert len(replacements) == 1
+    temporary_path, final_path = replacements[0]
+    assert temporary_path.parent == manifest_path.parent
+    assert temporary_path.name.startswith(f".{CUT_APPLY_MANIFEST_ARTIFACT}.")
+    assert final_path == manifest_path
+    assert not temporary_path.exists()

@@ -808,6 +808,71 @@ def test_cut_review_page_applies_approved_cuts(tmp_path, monkeypatch) -> None:
     assert [cut.suggestion_id for cut in applied[0]["cuts"]] == ["cut-0001"]
 
 
+def test_cut_review_hides_stale_reviewed_audio_after_review_changes(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    write_test_cut_suggestions(work_dir)
+    output_path = work_dir / "06_loudnorm.m4a"
+    output_path.write_bytes(b"audio")
+    reviewed_path = work_dir / "cut_reviewed.m4a"
+    reviewed_path.write_bytes(b"reviewed audio")
+    review_path = work_dir / "cut_review.json"
+    review_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_artifact": "cut_suggestions.json",
+                "decisions": [{"suggestion_id": "cut-0001", "decision": "approved"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    suggestions_version = artifact_version(work_dir / "cut_suggestions.json")
+    applied_review_version = artifact_version(review_path)
+    (work_dir / "cut_apply_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "succeeded",
+                "suggestions_version": suggestions_version,
+                "review_version": applied_review_version,
+                "output_artifact": "cut_reviewed.m4a",
+            }
+        ),
+        encoding="utf-8",
+    )
+    review_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_artifact": "cut_suggestions.json",
+                "decisions": [{"suggestion_id": "cut-0001", "decision": "rejected"}],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    update_job(
+        db_path,
+        "job-1",
+        status="succeeded",
+        output_path=str(output_path),
+        current_stage="complete",
+        progress=100,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.get("/jobs/job-1/cuts")
+
+    assert response.status_code == 200
+    assert "Apply manifest" in response.text
+    assert "Download reviewed audio" not in response.text
+    assert "/api/jobs/job-1/artifacts/cut_reviewed.m4a" not in response.text
+
+
 def test_cut_review_apply_requires_approved_cuts(tmp_path, monkeypatch) -> None:
     db_path = configure_tmp_settings(tmp_path, monkeypatch)
     input_path = tmp_path / "input.wav"
