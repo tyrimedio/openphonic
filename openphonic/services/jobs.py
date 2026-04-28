@@ -14,7 +14,7 @@ from openphonic.core.database import (
 )
 from openphonic.core.logging import append_event, log_event
 from openphonic.core.settings import get_settings
-from openphonic.pipeline.config import PipelineConfig
+from openphonic.pipeline.config import load_pipeline_config_for_preset
 from openphonic.pipeline.runner import PipelineRunner
 from openphonic.services.storage import archive_job_attempt, job_dir, new_job_id, upload_path
 
@@ -157,7 +157,9 @@ def run_job(job_id: str) -> None:
         )
 
     try:
-        config = PipelineConfig.from_path(settings.pipeline_config)
+        job_config = record.to_dict().get("config", {})
+        preset = job_config.get("preset") if isinstance(job_config, dict) else None
+        config = load_pipeline_config_for_preset(preset, default_path=settings.pipeline_config)
         result = PipelineRunner(
             config,
             progress_callback=on_stage,

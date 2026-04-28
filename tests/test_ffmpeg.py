@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from openphonic.pipeline.ffmpeg import (
     parse_loudnorm_json,
     parse_media_metadata,
 )
-from openphonic.pipeline.stages import IngestStage, StageError
+from openphonic.pipeline.stages import DeepFilterNetStage, IngestStage, StageError
 
 
 def test_build_ingest_command_sets_working_format() -> None:
@@ -168,3 +169,54 @@ def test_stage_fails_when_command_does_not_produce_artifact(tmp_path, monkeypatc
 
     with pytest.raises(StageError, match="Ingest stage did not produce expected artifact"):
         IngestStage(config=PipelineConfig("test")).run(input_path, tmp_path)
+
+
+def test_deepfilternet_stage_passes_configured_attenuation(tmp_path, monkeypatch) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    seen_commands: list[list[str]] = []
+
+    def fake_subprocess_run(args, check, text, capture_output):
+        _ = check, text, capture_output
+        seen_commands.append(args)
+        output_dir = Path(args[args.index("-o") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "enhanced.wav").write_bytes(b"enhanced")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("openphonic.pipeline.stages.shutil.which", lambda binary: f"/bin/{binary}")
+    monkeypatch.setattr("openphonic.pipeline.stages.subprocess.run", fake_subprocess_run)
+
+    output_path = DeepFilterNetStage(
+        PipelineConfig(
+            name="test",
+            stages={"noise_reduction": {"enabled": True, "attenuation_db": 8}},
+        )
+    ).run(input_path, tmp_path)
+
+    assert output_path == tmp_path / "02_noise_reduced.wav"
+    assert output_path.read_bytes() == b"enhanced"
+    assert seen_commands == [
+        [
+            "deepFilter",
+            "--atten-lim",
+            "8",
+            str(input_path),
+            "-o",
+            str(tmp_path / "02_deepfilternet"),
+        ]
+    ]
+
+
+def test_deepfilternet_stage_rejects_invalid_attenuation(tmp_path, monkeypatch) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    monkeypatch.setattr("openphonic.pipeline.stages.shutil.which", lambda binary: f"/bin/{binary}")
+
+    with pytest.raises(StageError, match="attenuation_db must be greater than zero"):
+        DeepFilterNetStage(
+            PipelineConfig(
+                name="test",
+                stages={"noise_reduction": {"enabled": True, "attenuation_db": 0}},
+            )
+        ).run(input_path, tmp_path)

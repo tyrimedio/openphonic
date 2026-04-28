@@ -11,7 +11,12 @@ from fastapi.templating import Jinja2Templates
 
 from openphonic.core.database import create_job, init_db
 from openphonic.core.settings import get_settings
-from openphonic.pipeline.config import PipelineConfig, TargetFormat
+from openphonic.pipeline.config import (
+    TargetFormat,
+    available_presets,
+    load_pipeline_config_for_preset,
+    preset_by_id,
+)
 from openphonic.services.cuts import (
     CUT_APPLY_MANIFEST_ARTIFACT,
     CutApplyError,
@@ -339,7 +344,12 @@ def _job_target_format(job_id: str) -> TargetFormat:
                 return TargetFormat(**fields)
             except (TypeError, ValueError):
                 pass
-    return PipelineConfig.from_path(get_settings().pipeline_config).target
+    record = fetch_job(job_id)
+    job_config = record.to_dict().get("config", {}) if record is not None else {}
+    preset = job_config.get("preset") if isinstance(job_config, dict) else None
+    return load_pipeline_config_for_preset(
+        preset, default_path=get_settings().pipeline_config
+    ).target
 
 
 def _correction_text_by_index(corrections: dict[str, Any] | None) -> dict[int, str]:
@@ -735,6 +745,7 @@ def index(request: Request):
             "request": request,
             "jobs": recent_jobs(50),
             "settings": get_settings(),
+            "presets": available_presets(get_settings().pipeline_config),
         },
     )
 
@@ -1129,6 +1140,10 @@ async def _create_job(
     settings = get_settings()
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename.")
+    try:
+        preset_info = preset_by_id(preset, default_path=settings.pipeline_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     job_id, destination = reserve_upload(file.filename)
     try:
@@ -1141,7 +1156,7 @@ async def _create_job(
         job_id=job_id,
         original_filename=file.filename,
         input_path=destination,
-        config={"preset": preset},
+        config={"preset": preset_info.id, "preset_label": preset_info.label},
     )
     background_tasks.add_task(run_job, job_id)
     return {"id": job_id, "status_url": f"/api/jobs/{job_id}"}

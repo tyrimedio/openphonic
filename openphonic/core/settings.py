@@ -20,6 +20,9 @@ def _env_int(name: str, default: int) -> int:
     return default if value in (None, "") else int(value)
 
 
+DEFAULT_PIPELINE_CONFIG = Path(__file__).resolve().parents[1] / "config" / "default.yml"
+
+
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
@@ -51,7 +54,7 @@ def get_settings() -> Settings:
     return Settings(
         data_dir=data_dir,
         database_path=_env_path("OPENPHONIC_DATABASE_PATH", data_dir / "openphonic.sqlite3"),
-        pipeline_config=_env_path("OPENPHONIC_PIPELINE_CONFIG", "./config/default.yml"),
+        pipeline_config=_env_path("OPENPHONIC_PIPELINE_CONFIG", DEFAULT_PIPELINE_CONFIG),
         max_upload_mb=_env_int("OPENPHONIC_MAX_UPLOAD_MB", 1024),
         public_base_url=os.getenv("OPENPHONIC_PUBLIC_BASE_URL", "http://127.0.0.1:8000"),
         hf_token=os.getenv("HF_TOKEN") or None,

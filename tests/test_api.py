@@ -125,6 +125,51 @@ def test_index_route_renders(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 200
     assert "Openphonic" in response.text
+    assert 'value="podcast-default"' in response.text
+    assert 'value="speech-cleanup"' in response.text
+    assert 'value="vocal-isolation"' in response.text
+
+
+def test_create_job_rejects_unknown_preset(tmp_path, monkeypatch) -> None:
+    configure_tmp_settings(tmp_path, monkeypatch)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs",
+            data={"preset": "missing"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown pipeline preset: missing"
+
+
+def test_create_job_stores_selected_preset(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    started: list[str] = []
+
+    def fake_run_job(job_id: str) -> None:
+        started.append(job_id)
+
+    monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs",
+            data={"preset": "speech-cleanup"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    job_id = response.headers["location"].removeprefix("/jobs/")
+    record = get_job(db_path, job_id)
+    assert record is not None
+    assert record.to_dict()["config"] == {
+        "preset": "speech-cleanup",
+        "preset_label": "Speech cleanup",
+    }
+    assert started == [job_id]
 
 
 def test_job_artifact_routes_list_and_serve_files(tmp_path, monkeypatch) -> None:
