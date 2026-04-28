@@ -53,8 +53,11 @@ TEXT_ARTIFACT_EXTENSIONS = {
     ".yml",
 }
 TRANSCRIPT_CORRECTIONS_ARTIFACT = "transcript_corrections.json"
-MAX_TRANSCRIPT_CORRECTION_FORM_BYTES = 1024 * 1024
-MAX_TRANSCRIPT_CORRECTION_FIELDS = 10_000
+SPEAKER_CORRECTIONS_ARTIFACT = "speaker_corrections.json"
+MAX_CORRECTION_FORM_BYTES = 1024 * 1024
+MAX_CORRECTION_FIELDS = 10_000
+MAX_TRANSCRIPT_CORRECTION_FORM_BYTES = MAX_CORRECTION_FORM_BYTES
+MAX_TRANSCRIPT_CORRECTION_FIELDS = MAX_CORRECTION_FIELDS
 
 
 def _ensure_ready() -> None:
@@ -167,13 +170,38 @@ def _load_transcript_artifact(
     return transcript, artifact_name
 
 
-def _corrections_path(job_id: str) -> Path:
-    return job_dir(get_settings(), job_id) / TRANSCRIPT_CORRECTIONS_ARTIFACT
-
-
-def _corrections_version(job_id: str) -> str:
+def _load_diarization_artifact(job_id: str) -> tuple[dict[str, Any], str]:
+    artifact_name = "diarization.json"
     try:
-        path = job_artifact_path(get_settings(), job_id, TRANSCRIPT_CORRECTIONS_ARTIFACT)
+        path = job_artifact_path(get_settings(), job_id, artifact_name)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="Diarization artifact not found.") from exc
+
+    try:
+        diarization = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="Diarization artifact is invalid JSON.",
+        ) from exc
+    if not isinstance(diarization, dict):
+        raise HTTPException(status_code=422, detail="Diarization artifact must be a JSON object.")
+    return diarization, artifact_name
+
+
+def _corrections_path(
+    job_id: str,
+    artifact_name: str = TRANSCRIPT_CORRECTIONS_ARTIFACT,
+) -> Path:
+    return job_dir(get_settings(), job_id) / artifact_name
+
+
+def _corrections_version(
+    job_id: str,
+    artifact_name: str = TRANSCRIPT_CORRECTIONS_ARTIFACT,
+) -> str:
+    try:
+        path = job_artifact_path(get_settings(), job_id, artifact_name)
     except FileNotFoundError:
         return "missing"
     except ValueError as exc:
@@ -183,9 +211,13 @@ def _corrections_version(job_id: str) -> str:
     return f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
-def _load_transcript_corrections(job_id: str) -> dict[str, Any] | None:
+def _load_corrections_artifact(
+    job_id: str,
+    artifact_name: str,
+    label: str,
+) -> dict[str, Any] | None:
     try:
-        path = job_artifact_path(get_settings(), job_id, TRANSCRIPT_CORRECTIONS_ARTIFACT)
+        path = job_artifact_path(get_settings(), job_id, artifact_name)
     except FileNotFoundError:
         return None
     except ValueError as exc:
@@ -195,11 +227,20 @@ def _load_transcript_corrections(job_id: str) -> dict[str, Any] | None:
         corrections = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise HTTPException(
-            status_code=422, detail="Transcript corrections are invalid JSON."
+            status_code=422,
+            detail=f"{label} corrections are invalid JSON.",
         ) from exc
     if not isinstance(corrections, dict):
-        raise HTTPException(status_code=422, detail="Transcript corrections must be a JSON object.")
+        raise HTTPException(status_code=422, detail=f"{label} corrections must be a JSON object.")
     return corrections
+
+
+def _load_transcript_corrections(job_id: str) -> dict[str, Any] | None:
+    return _load_corrections_artifact(job_id, TRANSCRIPT_CORRECTIONS_ARTIFACT, "Transcript")
+
+
+def _load_speaker_corrections(job_id: str) -> dict[str, Any] | None:
+    return _load_corrections_artifact(job_id, SPEAKER_CORRECTIONS_ARTIFACT, "Speaker")
 
 
 def _correction_text_by_index(corrections: dict[str, Any] | None) -> dict[int, str]:
@@ -291,12 +332,99 @@ def _build_transcript_corrections(
     }
 
 
-async def _read_limited_correction_form(request: Request) -> dict[str, str]:
+def _speaker_label_map(corrections: dict[str, Any] | None) -> dict[str, str]:
+    if corrections is None:
+        return {}
+
+    labels: dict[str, str] = {}
+    for speaker in corrections.get("speakers") or []:
+        if not isinstance(speaker, dict):
+            continue
+        speaker_id = speaker.get("speaker")
+        label = speaker.get("label")
+        if isinstance(speaker_id, str) and isinstance(label, str):
+            labels[speaker_id] = label
+    return labels
+
+
+def _diarization_speaker_rows(
+    diarization: dict[str, Any],
+    corrections: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    labels = _speaker_label_map(corrections)
+    speakers: dict[str, dict[str, Any]] = {}
+    for segment in diarization.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        speaker_id = str(segment.get("speaker") or "")
+        if not speaker_id:
+            continue
+        row = speakers.setdefault(
+            speaker_id,
+            {
+                "speaker": speaker_id,
+                "label": labels.get(speaker_id, speaker_id),
+                "turn_count": 0,
+            },
+        )
+        row["turn_count"] += 1
+    return sorted(speakers.values(), key=lambda row: row["speaker"])
+
+
+def _diarization_turn_rows(
+    diarization: dict[str, Any],
+    corrections: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    labels = _speaker_label_map(corrections)
+    turns: list[dict[str, Any]] = []
+    for index, segment in enumerate(diarization.get("segments") or []):
+        if not isinstance(segment, dict):
+            continue
+        speaker_id = str(segment.get("speaker") or "")
+        turns.append(
+            {
+                "index": index,
+                "start": _format_seconds(segment.get("start")),
+                "end": _format_seconds(segment.get("end")),
+                "speaker": speaker_id,
+                "label": labels.get(speaker_id, speaker_id),
+                "track": segment.get("track"),
+            }
+        )
+    return turns
+
+
+def _build_speaker_corrections(
+    diarization: dict[str, Any],
+    artifact_name: str,
+    form: dict[str, str],
+) -> dict[str, Any]:
+    known_speakers = {row["speaker"] for row in _diarization_speaker_rows(diarization)}
+    speakers: list[dict[str, str]] = []
+    index = 0
+    while f"speaker_{index}_id" in form:
+        speaker_id = form[f"speaker_{index}_id"]
+        label = form.get(f"speaker_{index}_label", "").strip()
+        if speaker_id in known_speakers and label and label != speaker_id:
+            speakers.append({"speaker": speaker_id, "label": label})
+        index += 1
+
+    return {
+        "schema_version": 1,
+        "source_artifact": artifact_name,
+        "speakers": speakers,
+    }
+
+
+async def _read_limited_correction_form(
+    request: Request,
+    label: str = "Transcript",
+) -> dict[str, str]:
     content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
     if content_type != "application/x-www-form-urlencoded":
         raise HTTPException(
             status_code=415,
-            detail="Transcript corrections must be submitted as a URL-encoded form.",
+            detail=f"{label} corrections must be submitted as a URL-encoded form.",
         )
 
     content_length = request.headers.get("content-length")
@@ -305,40 +433,45 @@ async def _read_limited_correction_form(request: Request) -> dict[str, str]:
             declared_size = int(content_length)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid Content-Length.") from exc
-        if declared_size > MAX_TRANSCRIPT_CORRECTION_FORM_BYTES:
-            raise HTTPException(status_code=413, detail="Transcript corrections form is too large.")
+        if declared_size > MAX_CORRECTION_FORM_BYTES:
+            raise HTTPException(status_code=413, detail=f"{label} corrections form is too large.")
 
     body = bytearray()
     async for chunk in request.stream():
-        if len(body) + len(chunk) > MAX_TRANSCRIPT_CORRECTION_FORM_BYTES:
-            raise HTTPException(status_code=413, detail="Transcript corrections form is too large.")
+        if len(body) + len(chunk) > MAX_CORRECTION_FORM_BYTES:
+            raise HTTPException(status_code=413, detail=f"{label} corrections form is too large.")
         body.extend(chunk)
 
     try:
         decoded = body.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HTTPException(
-            status_code=400, detail="Transcript corrections form is not UTF-8."
+            status_code=400, detail=f"{label} corrections form is not UTF-8."
         ) from exc
 
     try:
         parsed = parse_qs(
             decoded,
             keep_blank_values=True,
-            max_num_fields=MAX_TRANSCRIPT_CORRECTION_FIELDS,
+            max_num_fields=MAX_CORRECTION_FIELDS,
         )
     except ValueError as exc:
         raise HTTPException(
-            status_code=400, detail="Transcript corrections form is invalid."
+            status_code=400, detail=f"{label} corrections form is invalid."
         ) from exc
     return {key: values[-1] if values else "" for key, values in parsed.items()}
 
 
-def _ensure_fresh_corrections(job_id: str, submitted_version: str | None) -> None:
-    if submitted_version != _corrections_version(job_id):
+def _ensure_fresh_corrections(
+    job_id: str,
+    submitted_version: str | None,
+    artifact_name: str = TRANSCRIPT_CORRECTIONS_ARTIFACT,
+    label: str = "Transcript",
+) -> None:
+    if submitted_version != _corrections_version(job_id, artifact_name):
         raise HTTPException(
             status_code=409,
-            detail="Transcript corrections changed. Reload the edit page and try again.",
+            detail=f"{label} corrections changed. Reload the edit page and try again.",
         )
 
 
@@ -396,6 +529,9 @@ def job_page(request: Request, job_id: str):
             "request": request,
             "job": record,
             "artifacts": [_artifact_payload(job_id, artifact) for artifact in artifacts],
+            "speaker_url": f"/jobs/{job_id}/speakers"
+            if "diarization.json" in artifact_names
+            else None,
             "common_artifacts": [
                 {
                     "label": label,
@@ -473,10 +609,87 @@ async def save_transcript_corrections(request: Request, job_id: str):
     _ensure_fresh_corrections(job_id, form.get("corrections_version"))
     corrections = _build_transcript_corrections(transcript, artifact_name, form)
     serialized = json.dumps(corrections, indent=2)
-    if len(serialized.encode("utf-8")) > MAX_TRANSCRIPT_CORRECTION_FORM_BYTES:
+    if len(serialized.encode("utf-8")) > MAX_CORRECTION_FORM_BYTES:
         raise HTTPException(status_code=413, detail="Transcript corrections artifact is too large.")
     _corrections_path(job_id).write_text(serialized, encoding="utf-8")
     return RedirectResponse(f"/jobs/{job_id}/transcript", status_code=303)
+
+
+@router.get("/jobs/{job_id}/speakers", response_class=HTMLResponse)
+def speakers_page(request: Request, job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    diarization, artifact_name = _load_diarization_artifact(job_id)
+    corrections = _load_speaker_corrections(job_id)
+    speakers = _diarization_speaker_rows(diarization, corrections)
+    turns = _diarization_turn_rows(diarization, corrections)
+    rttm_name = "diarization.rttm"
+    artifacts = {artifact.name for artifact in list_job_artifacts(get_settings(), job_id)}
+    return templates.TemplateResponse(
+        request,
+        "speakers.html",
+        {
+            "request": request,
+            "job": record,
+            "diarization": diarization,
+            "speakers": speakers,
+            "turns": turns,
+            "artifact_name": artifact_name,
+            "download_url": _artifact_url(job_id, artifact_name),
+            "rttm_url": _artifact_url(job_id, rttm_name) if rttm_name in artifacts else None,
+            "edit_url": f"/jobs/{job_id}/speakers/edit",
+            "corrections_url": _artifact_url(job_id, SPEAKER_CORRECTIONS_ARTIFACT)
+            if corrections is not None
+            else None,
+            "correction_count": sum(
+                1 for speaker in speakers if speaker["label"] != speaker["speaker"]
+            ),
+        },
+    )
+
+
+@router.get("/jobs/{job_id}/speakers/edit", response_class=HTMLResponse)
+def speakers_edit_page(request: Request, job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    diarization, artifact_name = _load_diarization_artifact(job_id)
+    corrections = _load_speaker_corrections(job_id)
+    speakers = _diarization_speaker_rows(diarization, corrections)
+    return templates.TemplateResponse(
+        request,
+        "speakers_edit.html",
+        {
+            "request": request,
+            "job": record,
+            "speakers": speakers,
+            "artifact_name": artifact_name,
+            "corrections_version": _corrections_version(job_id, SPEAKER_CORRECTIONS_ARTIFACT),
+            "save_url": f"/jobs/{job_id}/speakers/corrections",
+        },
+    )
+
+
+@router.post("/jobs/{job_id}/speakers/corrections")
+async def save_speaker_corrections(request: Request, job_id: str):
+    _ensure_ready()
+    _require_job(job_id)
+    diarization, artifact_name = _load_diarization_artifact(job_id)
+    form = await _read_limited_correction_form(request, "Speaker")
+    _ensure_fresh_corrections(
+        job_id,
+        form.get("corrections_version"),
+        SPEAKER_CORRECTIONS_ARTIFACT,
+        "Speaker",
+    )
+    corrections = _build_speaker_corrections(diarization, artifact_name, form)
+    serialized = json.dumps(corrections, indent=2)
+    if len(serialized.encode("utf-8")) > MAX_CORRECTION_FORM_BYTES:
+        raise HTTPException(status_code=413, detail="Speaker corrections artifact is too large.")
+    _corrections_path(job_id, SPEAKER_CORRECTIONS_ARTIFACT).write_text(
+        serialized,
+        encoding="utf-8",
+    )
+    return RedirectResponse(f"/jobs/{job_id}/speakers", status_code=303)
 
 
 @router.get("/jobs/{job_id}/artifacts/{artifact_name:path}", response_class=HTMLResponse)

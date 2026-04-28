@@ -27,6 +27,26 @@ def configure_tmp_settings(tmp_path, monkeypatch) -> Path:
     return db_path
 
 
+def write_test_diarization(work_dir: Path) -> dict:
+    diarization = {
+        "schema_version": 1,
+        "engine": "pyannote.audio",
+        "model": "pyannote/test-diarization",
+        "speaker_count": 2,
+        "segments": [
+            {"start": 0.0, "end": 1.4, "speaker": "SPEAKER_00", "track": "A"},
+            {"start": 1.4, "end": 2.8, "speaker": "SPEAKER_01", "track": "B"},
+            {"start": 2.8, "end": 3.2, "speaker": "SPEAKER_00", "track": "C"},
+        ],
+    }
+    (work_dir / "diarization.json").write_text(json.dumps(diarization), encoding="utf-8")
+    (work_dir / "diarization.rttm").write_text(
+        "SPEAKER test 1 0.000 1.400 <NA> <NA> SPEAKER_00 <NA> <NA>\n",
+        encoding="utf-8",
+    )
+    return diarization
+
+
 def test_index_route_renders(tmp_path, monkeypatch) -> None:
     configure_tmp_settings(tmp_path, monkeypatch)
 
@@ -375,6 +395,111 @@ def test_transcript_corrections_return_404_when_transcript_is_missing(
             data={"segment_0_text": "No transcript"},
         )
 
+    assert edit_response.status_code == 404
+    assert save_response.status_code == 404
+
+
+def test_speaker_pages_save_corrections_artifact(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    diarization = write_test_diarization(work_dir)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    with TestClient(create_app()) as client:
+        job_response = client.get("/jobs/job-1")
+        speakers_response = client.get("/jobs/job-1/speakers")
+        edit_response = client.get("/jobs/job-1/speakers/edit")
+        save_response = client.post(
+            "/jobs/job-1/speakers/corrections",
+            data={
+                "corrections_version": "missing",
+                "speaker_0_id": "SPEAKER_00",
+                "speaker_0_label": "Host",
+                "speaker_1_id": "SPEAKER_01",
+                "speaker_1_label": "SPEAKER_01",
+            },
+            follow_redirects=False,
+        )
+        corrected_response = client.get("/jobs/job-1/speakers")
+        artifact_response = client.get("/api/jobs/job-1/artifacts/speaker_corrections.json")
+
+    corrections_path = work_dir / "speaker_corrections.json"
+    assert job_response.status_code == 200
+    assert 'href="/jobs/job-1/speakers"' in job_response.text
+    assert speakers_response.status_code == 200
+    assert "SPEAKER_00" in speakers_response.text
+    assert "Diarization RTTM" in speakers_response.text
+    assert "0 corrected" in speakers_response.text
+    assert edit_response.status_code == 200
+    assert 'name="corrections_version" value="missing"' in edit_response.text
+    assert 'name="speaker_0_label"' in edit_response.text
+    assert save_response.status_code == 303
+    assert save_response.headers["location"] == "/jobs/job-1/speakers"
+    assert json.loads(corrections_path.read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "source_artifact": "diarization.json",
+        "speakers": [{"speaker": "SPEAKER_00", "label": "Host"}],
+    }
+    assert json.loads((work_dir / "diarization.json").read_text(encoding="utf-8")) == diarization
+    assert corrected_response.status_code == 200
+    assert "Host" in corrected_response.text
+    assert "Speaker Corrections JSON" in corrected_response.text
+    assert "1 corrected" in corrected_response.text
+    assert artifact_response.status_code == 200
+
+
+def test_speaker_corrections_reject_stale_edits(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    write_test_diarization(work_dir)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    existing_corrections = {
+        "schema_version": 1,
+        "source_artifact": "diarization.json",
+        "speakers": [{"speaker": "SPEAKER_00", "label": "Host"}],
+    }
+    corrections_path = work_dir / "speaker_corrections.json"
+    corrections_path.write_text(json.dumps(existing_corrections), encoding="utf-8")
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs/job-1/speakers/corrections",
+            data={
+                "corrections_version": "missing",
+                "speaker_0_id": "SPEAKER_00",
+                "speaker_0_label": "Guest",
+            },
+        )
+
+    assert response.status_code == 409
+    assert json.loads(corrections_path.read_text(encoding="utf-8")) == existing_corrections
+
+
+def test_speaker_pages_return_404_when_diarization_is_missing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+
+    with TestClient(create_app()) as client:
+        page_response = client.get("/jobs/job-1/speakers")
+        edit_response = client.get("/jobs/job-1/speakers/edit")
+        save_response = client.post(
+            "/jobs/job-1/speakers/corrections",
+            data={"corrections_version": "missing"},
+        )
+
+    assert page_response.status_code == 404
     assert edit_response.status_code == 404
     assert save_response.status_code == 404
 

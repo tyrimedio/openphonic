@@ -60,6 +60,9 @@
         {% if job.transcript_path %}
           <a class="button secondary" href="/jobs/{{ job.id }}/transcript">Transcript</a>
         {% endif %}
+        {% if speaker_url %}
+          <a class="button secondary" href="{{ speaker_url }}">Speakers</a>
+        {% endif %}
         <a class="button secondary" href="/api/jobs/{{ job.id }}">JSON</a>
       </section>
 

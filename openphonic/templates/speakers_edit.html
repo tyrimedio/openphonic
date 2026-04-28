@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Edit Speakers - {{ job.original_filename }} - Openphonic</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell reading">
+      <header class="topbar">
+        <div>
+          <a href="/jobs/{{ job.id }}/speakers">Back to speakers</a>
+          <h1>Edit Speakers</h1>
+          <p>{{ job.original_filename }}</p>
+        </div>
+      </header>
+
+      <form action="{{ save_url }}" method="post">
+        <input type="hidden" name="corrections_version" value="{{ corrections_version }}">
+        <section class="panel">
+          <div class="section-heading">
+            <h2>Speakers</h2>
+            <span class="mono">{{ artifact_name }}</span>
+          </div>
+          {% if speakers %}
+            <div class="edit-list">
+              {% for speaker in speakers %}
+                <label class="edit-speaker">
+                  <span class="edit-speaker-meta">
+                    <span class="mono">{{ speaker.speaker }}</span>
+                    <small>{{ speaker.turn_count }} turns</small>
+                  </span>
+                  <input
+                    type="hidden"
+                    name="speaker_{{ loop.index0 }}_id"
+                    value="{{ speaker.speaker }}"
+                  >
+                  <input
+                    name="speaker_{{ loop.index0 }}_label"
+                    value="{{ speaker.label }}"
+                    aria-label="Label for {{ speaker.speaker }}"
+                  >
+                </label>
+              {% endfor %}
+            </div>
+          {% else %}
+            <p class="empty">No speakers found.</p>
+          {% endif %}
+        </section>
+
+        <section class="actions">
+          <button class="button" type="submit">Save speaker labels</button>
+          <a class="button secondary" href="/jobs/{{ job.id }}/speakers">Cancel</a>
+        </section>
+      </form>
+    </main>
+  </body>
+</html>
