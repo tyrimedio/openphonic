@@ -83,13 +83,30 @@ def recover_interrupted_jobs() -> int:
 
 def retry_failed_job(job_id: str):
     settings = get_settings()
-    retried = claim_failed_job_for_retry(settings.database_path, job_id)
-    if retried is None:
+    claim = claim_failed_job_for_retry(settings.database_path, job_id)
+    if claim is None:
         record = get_job(settings.database_path, job_id)
         if record is None:
             raise KeyError(job_id)
         raise JobRetryError(f"Only failed jobs can be retried. Current status: {record.status}.")
-    archive_dir = archive_job_attempt(settings, job_id, _attempt_archive_name())
+
+    try:
+        archive_dir = archive_job_attempt(settings, job_id, _attempt_archive_name())
+    except Exception:
+        update_job(
+            settings.database_path,
+            job_id,
+            status=claim.previous.status,
+            output_path=claim.previous.output_path,
+            transcript_path=claim.previous.transcript_path,
+            error_message=claim.previous.error_message,
+            current_stage=claim.previous.current_stage,
+            progress=claim.previous.progress,
+            started_at=claim.previous.started_at,
+            completed_at=claim.previous.completed_at,
+        )
+        raise
+
     work_dir = job_dir(settings, job_id)
     append_event(
         work_dir / "job-events.jsonl",
@@ -98,7 +115,7 @@ def retry_failed_job(job_id: str):
         archived_to=archive_dir,
     )
     log_event(logger, "job.retry_queued", job_id=job_id, archived_to=archive_dir)
-    return retried
+    return claim.current
 
 
 def run_job(job_id: str) -> None:

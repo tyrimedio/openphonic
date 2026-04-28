@@ -58,9 +58,11 @@ def test_failed_job_retry_claim_is_conditional(tmp_path) -> None:
     second_claim = claim_failed_job_for_retry(db_path, "job-1")
 
     assert claimed is not None
-    assert claimed.status == "queued"
-    assert claimed.output_path is None
-    assert claimed.transcript_path is None
-    assert claimed.error_message is None
-    assert claimed.progress == 0
+    assert claimed.previous.status == "failed"
+    assert claimed.previous.error_message == "boom"
+    assert claimed.current.status == "queued"
+    assert claimed.current.output_path is None
+    assert claimed.current.transcript_path is None
+    assert claimed.current.error_message is None
+    assert claimed.current.progress == 0
     assert second_claim is None

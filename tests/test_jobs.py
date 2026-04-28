@@ -188,3 +188,45 @@ def test_retry_failed_job_claims_before_archiving(tmp_path, monkeypatch) -> None
     retry_failed_job("job-4")
 
     assert archived
+
+
+def test_retry_failed_job_restores_failed_state_when_archiving_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-5", original_filename="input.wav", input_path=input_path)
+    update_job(
+        db_path,
+        "job-5",
+        status="failed",
+        output_path="/old/output.m4a",
+        transcript_path="/old/transcript.json",
+        error_message="boom",
+        current_stage="failed",
+        progress=72,
+    )
+
+    def failing_archive_job_attempt(settings, job_id: str, archive_name: str):
+        _ = settings, job_id, archive_name
+        raise OSError("archive unavailable")
+
+    monkeypatch.setattr("openphonic.services.jobs.archive_job_attempt", failing_archive_job_attempt)
+
+    try:
+        retry_failed_job("job-5")
+    except OSError as exc:
+        assert str(exc) == "archive unavailable"
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("Expected archive failure.")
+
+    record = get_job(db_path, "job-5")
+    assert record is not None
+    assert record.status == "failed"
+    assert record.output_path == "/old/output.m4a"
+    assert record.transcript_path == "/old/transcript.json"
+    assert record.error_message == "boom"
+    assert record.current_stage == "failed"
+    assert record.progress == 72
