@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Transcript - {{ job.original_filename }} - Openphonic</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <main class="shell reading">
+      <header class="topbar">
+        <div>
+          <a href="/jobs/{{ job.id }}">Back to job</a>
+          <h1>Transcript</h1>
+          <p>{{ job.original_filename }}</p>
+        </div>
+        <a class="button secondary" href="{{ download_url }}">Download JSON</a>
+      </header>
+
+      <section class="panel">
+        <div class="metric-grid">
+          <div>
+            <span>Language</span>
+            <strong>{{ transcript.language or "-" }}</strong>
+          </div>
+          <div>
+            <span>Confidence</span>
+            <strong>{{ language_probability }}</strong>
+          </div>
+          <div>
+            <span>Duration</span>
+            <strong>{{ duration }}</strong>
+          </div>
+          <div>
+            <span>Segments</span>
+            <strong>{{ segments|length }}</strong>
+          </div>
+          <div>
+            <span>Words</span>
+            <strong>{{ word_count }}</strong>
+          </div>
+          <div>
+            <span>Model</span>
+            <strong>{{ transcript.model or "-" }}</strong>
+          </div>
+        </div>
+      </section>
+
+      <section class="actions">
+        <a class="button secondary" href="{{ download_url }}">Transcript JSON</a>
+        {% if vtt_url %}
+          <a class="button secondary" href="{{ vtt_url }}">Transcript VTT</a>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Segments</h2>
+          <span class="mono">{{ artifact_name }}</span>
+        </div>
+        {% if segments %}
+          <div class="transcript-list">
+            {% for segment in segments %}
+              <article class="segment">
+                <div class="segment-time mono">
+                  {{ segment.start }} - {{ segment.end }}
+                </div>
+                <p>{{ segment.text }}</p>
+                {% if segment.words %}
+                  <div class="word-list">
+                    {% for word in segment.words %}
+                      <span
+                        class="word"
+                        title="{{ word.start }} - {{ word.end }} - {{ word.probability }}"
+                      >{{ word.text }}</span>
+                    {% endfor %}
+                  </div>
+                {% endif %}
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="empty">No transcript segments.</p>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>

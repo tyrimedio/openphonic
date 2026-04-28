@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
@@ -37,6 +38,19 @@ COMMON_ARTIFACTS = [
     ("Media metadata", "00_media_metadata.json", "/metadata"),
     ("Pipeline manifest", "pipeline_manifest.json", "/manifest"),
 ]
+MAX_ARTIFACT_PREVIEW_BYTES = 128 * 1024
+TEXT_ARTIFACT_EXTENSIONS = {
+    ".csv",
+    ".json",
+    ".jsonl",
+    ".log",
+    ".md",
+    ".rttm",
+    ".txt",
+    ".vtt",
+    ".yaml",
+    ".yml",
+}
 
 
 def _ensure_ready() -> None:
@@ -48,11 +62,18 @@ def _artifact_url(job_id: str, artifact_name: str) -> str:
     return f"/api/jobs/{job_id}/artifacts/{quote(artifact_name, safe='/')}"
 
 
+def _artifact_page_url(job_id: str, artifact_name: str) -> str:
+    return f"/jobs/{job_id}/artifacts/{quote(artifact_name, safe='/')}"
+
+
 def _artifact_payload(job_id: str, artifact: JobArtifact) -> dict:
     return {
         "name": artifact.name,
         "size_bytes": artifact.size_bytes,
+        "size": _format_bytes(artifact.size_bytes),
         "url": _artifact_url(job_id, artifact.name),
+        "download_url": _artifact_url(job_id, artifact.name),
+        "page_url": _artifact_page_url(job_id, artifact.name),
     }
 
 
@@ -73,6 +94,124 @@ def _artifact_response(job_id: str, artifact_name: str, media_type: str | None =
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Artifact not found.") from exc
     return FileResponse(path, filename=path.name, media_type=media_type)
+
+
+def _format_bytes(size_bytes: int) -> str:
+    value = float(size_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size_bytes} B"
+
+
+def _format_seconds(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        total_ms = int(round(float(value) * 1000))
+    except (TypeError, ValueError):
+        return "-"
+    hours, total_ms = divmod(total_ms, 3_600_000)
+    minutes, total_ms = divmod(total_ms, 60_000)
+    seconds, milliseconds = divmod(total_ms, 1000)
+    if hours:
+        return f"{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}"
+    return f"{minutes:02}:{seconds:02}.{milliseconds:03}"
+
+
+def _format_probability(value: Any) -> str:
+    if value is None:
+        return "-"
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _job_relative_artifact_name(job_id: str, path: Path) -> str | None:
+    root = (get_settings().jobs_dir / job_id).resolve()
+    try:
+        return path.resolve().relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _load_transcript_artifact(
+    job_id: str, transcript_path: str | None
+) -> tuple[dict[str, Any], str]:
+    if not transcript_path:
+        raise HTTPException(status_code=404, detail="Transcript not available.")
+
+    artifact_name = _job_relative_artifact_name(job_id, Path(transcript_path))
+    if artifact_name is None:
+        raise HTTPException(status_code=404, detail="Transcript artifact not found.")
+
+    try:
+        path = job_artifact_path(get_settings(), job_id, artifact_name)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail="Transcript artifact not found.") from exc
+
+    try:
+        transcript = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="Transcript artifact is invalid JSON.") from exc
+    if not isinstance(transcript, dict):
+        raise HTTPException(status_code=422, detail="Transcript artifact must be a JSON object.")
+    return transcript, artifact_name
+
+
+def _transcript_segments(transcript: dict[str, Any]) -> list[dict[str, Any]]:
+    rendered_segments: list[dict[str, Any]] = []
+    for segment in transcript.get("segments") or []:
+        if not isinstance(segment, dict):
+            continue
+        words = []
+        for word in segment.get("words") or []:
+            if not isinstance(word, dict):
+                continue
+            words.append(
+                {
+                    "text": word.get("word") or "",
+                    "start": _format_seconds(word.get("start")),
+                    "end": _format_seconds(word.get("end")),
+                    "probability": _format_probability(word.get("probability")),
+                }
+            )
+        rendered_segments.append(
+            {
+                "id": segment.get("id"),
+                "start": _format_seconds(segment.get("start")),
+                "end": _format_seconds(segment.get("end")),
+                "text": segment.get("text") or "",
+                "words": words,
+            }
+        )
+    return rendered_segments
+
+
+def _artifact_preview(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() not in TEXT_ARTIFACT_EXTENSIONS:
+        return {"available": False, "reason": "Preview unavailable for binary artifacts."}
+
+    with path.open("rb") as handle:
+        data = handle.read(MAX_ARTIFACT_PREVIEW_BYTES + 1)
+    truncated = len(data) > MAX_ARTIFACT_PREVIEW_BYTES
+    if truncated:
+        data = data[:MAX_ARTIFACT_PREVIEW_BYTES]
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return {"available": False, "reason": "Preview unavailable for non-UTF-8 artifacts."}
+
+    if path.suffix.lower() == ".json" and not truncated:
+        try:
+            text = json.dumps(json.loads(text), indent=2)
+        except json.JSONDecodeError:
+            pass
+    return {"available": True, "content": text, "truncated": truncated}
 
 
 @router.get("/healthz")
@@ -111,11 +250,66 @@ def job_page(request: Request, job_id: str):
                 {
                     "label": label,
                     "name": artifact_name,
-                    "url": f"/api/jobs/{job_id}{suffix}",
+                    "url": _artifact_page_url(job_id, artifact_name),
+                    "download_url": f"/api/jobs/{job_id}{suffix}",
                 }
                 for label, artifact_name, suffix in COMMON_ARTIFACTS
                 if artifact_name in artifact_names
             ],
+        },
+    )
+
+
+@router.get("/jobs/{job_id}/transcript", response_class=HTMLResponse)
+def transcript_page(request: Request, job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    transcript, artifact_name = _load_transcript_artifact(job_id, record.transcript_path)
+    segments = _transcript_segments(transcript)
+    word_count = sum(len(segment["words"]) for segment in segments)
+    vtt_name = "transcript.vtt"
+    artifacts = {artifact.name for artifact in list_job_artifacts(get_settings(), job_id)}
+    return templates.TemplateResponse(
+        request,
+        "transcript.html",
+        {
+            "request": request,
+            "job": record,
+            "transcript": transcript,
+            "segments": segments,
+            "word_count": word_count,
+            "artifact_name": artifact_name,
+            "download_url": _artifact_url(job_id, artifact_name),
+            "vtt_url": _artifact_url(job_id, vtt_name) if vtt_name in artifacts else None,
+            "language_probability": _format_probability(transcript.get("language_probability")),
+            "duration": _format_seconds(transcript.get("duration")),
+        },
+    )
+
+
+@router.get("/jobs/{job_id}/artifacts/{artifact_name:path}", response_class=HTMLResponse)
+def artifact_page(request: Request, job_id: str, artifact_name: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    try:
+        path = job_artifact_path(get_settings(), job_id, artifact_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found.") from exc
+
+    return templates.TemplateResponse(
+        request,
+        "artifact.html",
+        {
+            "request": request,
+            "job": record,
+            "artifact": {
+                "name": artifact_name,
+                "size": _format_bytes(path.stat().st_size),
+                "download_url": _artifact_url(job_id, artifact_name),
+            },
+            "preview": _artifact_preview(path),
         },
     )
 
