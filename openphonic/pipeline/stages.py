@@ -443,30 +443,37 @@ def _build_cut_suggestions(
 
     timed_segments = _transcript_segments_for_timing(transcript)
     word_segment_indexes = {word["segment_index"] for word in words}
-    has_partial_word_timestamps = bool(words) and any(
-        segment["segment_index"] not in word_segment_indexes for segment in timed_segments
-    )
-    timing_units = words if words and not has_partial_word_timestamps else timed_segments
-    timing_source = "word_gap" if timing_units is words else "segment_gap"
-    for before, after in zip(timing_units, timing_units[1:], strict=False):
-        start = before["end"]
-        end = after["start"]
-        duration = end - start
-        if duration < min_silence_seconds:
+    wordless_segments = [
+        segment
+        for segment in timed_segments
+        if segment["segment_index"] not in word_segment_indexes
+    ]
+
+    if words:
+        for before, after in zip(words, words[1:], strict=False):
+            if _gap_overlaps_segments(before["end"], after["start"], wordless_segments):
+                continue
+            _append_silence_suggestion(
+                suggestions,
+                before=before,
+                after=after,
+                source="word_gap",
+                min_silence_seconds=min_silence_seconds,
+            )
+
+    wordless_segment_indexes = {segment["segment_index"] for segment in wordless_segments}
+    for before, after in zip(timed_segments, timed_segments[1:], strict=False):
+        if words and (
+            before["segment_index"] not in wordless_segment_indexes
+            and after["segment_index"] not in wordless_segment_indexes
+        ):
             continue
-        suggestions.append(
-            {
-                "type": "silence",
-                "start": _round_seconds(start),
-                "end": _round_seconds(end),
-                "duration": _round_seconds(duration),
-                "source": timing_source,
-                "before_segment_index": before["segment_index"],
-                "before_word_index": before["word_index"],
-                "after_segment_index": after["segment_index"],
-                "after_word_index": after["word_index"],
-                "reason": "Detected a timestamp gap longer than the configured threshold.",
-            }
+        _append_silence_suggestion(
+            suggestions,
+            before=before,
+            after=after,
+            source="segment_gap",
+            min_silence_seconds=min_silence_seconds,
         )
 
     suggestions = sorted(
@@ -484,6 +491,43 @@ def _build_cut_suggestions(
         }
         for index, suggestion in enumerate(suggestions, start=1)
     ]
+
+
+def _gap_overlaps_segments(
+    start: float,
+    end: float,
+    segments: list[dict[str, Any]],
+) -> bool:
+    return any(segment["start"] < end and segment["end"] > start for segment in segments)
+
+
+def _append_silence_suggestion(
+    suggestions: list[dict[str, Any]],
+    *,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    source: str,
+    min_silence_seconds: float,
+) -> None:
+    start = before["end"]
+    end = after["start"]
+    duration = end - start
+    if duration < min_silence_seconds:
+        return
+    suggestions.append(
+        {
+            "type": "silence",
+            "start": _round_seconds(start),
+            "end": _round_seconds(end),
+            "duration": _round_seconds(duration),
+            "source": source,
+            "before_segment_index": before["segment_index"],
+            "before_word_index": before["word_index"],
+            "after_segment_index": after["segment_index"],
+            "after_word_index": after["word_index"],
+            "reason": "Detected a timestamp gap longer than the configured threshold.",
+        }
+    )
 
 
 def _write_cut_suggestions(

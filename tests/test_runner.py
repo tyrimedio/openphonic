@@ -390,6 +390,76 @@ def test_cut_suggestions_do_not_span_wordless_segments(tmp_path) -> None:
     ]
 
 
+def test_cut_suggestions_keep_valid_word_gaps_in_partial_transcripts(tmp_path) -> None:
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "segments": [
+                    {
+                        "id": 1,
+                        "start": 0.0,
+                        "end": 1.4,
+                        "text": "hello again",
+                        "words": [
+                            {
+                                "start": 0.0,
+                                "end": 0.1,
+                                "word": "hello",
+                                "probability": 0.95,
+                            },
+                            {
+                                "start": 1.2,
+                                "end": 1.3,
+                                "word": "again",
+                                "probability": 0.96,
+                            },
+                        ],
+                    },
+                    {
+                        "id": 2,
+                        "start": 2.0,
+                        "end": 2.5,
+                        "text": "spoken words without timestamps",
+                        "words": [],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = PipelineConfig(
+        name="test",
+        stages={
+            "filler_removal": {
+                "enabled": True,
+                "words": ["um"],
+                "min_silence_seconds": 0.75,
+            }
+        },
+    )
+
+    FillerRemovalStage(config).run(transcript_path, tmp_path)
+
+    suggestions = json.loads((tmp_path / "cut_suggestions.json").read_text(encoding="utf-8"))
+    assert suggestions["suggestions"] == [
+        {
+            "id": "cut-0001",
+            "type": "silence",
+            "start": 0.1,
+            "end": 1.2,
+            "duration": 1.1,
+            "source": "word_gap",
+            "before_segment_index": 0,
+            "before_word_index": 0,
+            "after_segment_index": 0,
+            "after_word_index": 1,
+            "reason": "Detected a timestamp gap longer than the configured threshold.",
+        }
+    ]
+
+
 def test_runner_preserves_unavailable_cut_suggestion_artifact(tmp_path, monkeypatch) -> None:
     input_path = tmp_path / "input.wav"
     input_path.write_bytes(b"not real audio")
