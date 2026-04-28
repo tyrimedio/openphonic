@@ -202,19 +202,20 @@ class TranscriptionStage(PipelineStage):
             device = "cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu"
 
         model = WhisperModel(model_name, device=device)
-        segments, info = model.transcribe(str(input_path), language=stage.get("language"))
+        segments, info = model.transcribe(
+            str(input_path),
+            language=stage.get("language"),
+            word_timestamps=True,
+        )
         transcript = {
+            "schema_version": 1,
+            "engine": "faster-whisper",
+            "model": model_name,
+            "device": device,
             "language": info.language,
             "language_probability": info.language_probability,
-            "segments": [
-                {
-                    "id": segment.id,
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text,
-                }
-                for segment in segments
-            ],
+            "duration": getattr(info, "duration", None),
+            "segments": [_segment_to_dict(segment) for segment in segments],
         }
         json_path = work_dir / "transcript.json"
         json_path.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
@@ -258,6 +259,25 @@ def _timestamp(seconds: float) -> str:
     minutes, milliseconds = divmod(milliseconds, 60_000)
     seconds_value, milliseconds = divmod(milliseconds, 1000)
     return f"{hours:02}:{minutes:02}:{seconds_value:02}.{milliseconds:03}"
+
+
+def _word_to_dict(word: Any) -> dict[str, Any]:
+    return {
+        "start": getattr(word, "start", None),
+        "end": getattr(word, "end", None),
+        "word": getattr(word, "word", ""),
+        "probability": getattr(word, "probability", None),
+    }
+
+
+def _segment_to_dict(segment: Any) -> dict[str, Any]:
+    return {
+        "id": getattr(segment, "id", None),
+        "start": segment.start,
+        "end": segment.end,
+        "text": segment.text,
+        "words": [_word_to_dict(word) for word in (getattr(segment, "words", None) or [])],
+    }
 
 
 def _segments_to_vtt(segments: list[dict[str, Any]]) -> str:
