@@ -1,9 +1,12 @@
 import asyncio
+import shutil
+from pathlib import Path
 
 import pytest
 
 from openphonic.core.settings import Settings
 from openphonic.services.storage import (
+    archive_job_attempt,
     job_artifact_path,
     job_dir,
     list_job_artifacts,
@@ -94,3 +97,71 @@ def test_job_artifact_path_rejects_traversal(tmp_path) -> None:
         job_artifact_path(settings, "job-1", "../openphonic.sqlite3")
 
     assert job_artifact_path(settings, "job-1", "commands.jsonl") == root / "commands.jsonl"
+
+
+def test_archive_job_attempt_moves_current_artifacts_but_keeps_previous_attempts(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "openphonic.sqlite3",
+        pipeline_config=tmp_path / "config.yml",
+        max_upload_mb=10,
+        public_base_url="http://127.0.0.1:8000",
+        hf_token=None,
+        whisper_model="small",
+        whisper_device="auto",
+        pyannote_model="pyannote/speaker-diarization-3.1",
+        deepfilternet_bin="deepFilter",
+    )
+    root = job_dir(settings, "job-1")
+    (root / "commands.jsonl").write_text("{}", encoding="utf-8")
+    previous = root / "attempts" / "attempt-old"
+    previous.mkdir(parents=True)
+    (previous / "commands.jsonl").write_text("old", encoding="utf-8")
+
+    archive_dir = archive_job_attempt(settings, "job-1", "attempt-new")
+
+    assert archive_dir == root / "attempts" / "attempt-new"
+    assert not (root / "commands.jsonl").exists()
+    assert (archive_dir / "commands.jsonl").read_text(encoding="utf-8") == "{}"
+    assert (previous / "commands.jsonl").read_text(encoding="utf-8") == "old"
+
+
+def test_archive_job_attempt_rolls_back_moved_artifacts_when_later_move_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "openphonic.sqlite3",
+        pipeline_config=tmp_path / "config.yml",
+        max_upload_mb=10,
+        public_base_url="http://127.0.0.1:8000",
+        hf_token=None,
+        whisper_model="small",
+        whisper_device="auto",
+        pyannote_model="pyannote/speaker-diarization-3.1",
+        deepfilternet_bin="deepFilter",
+    )
+    root = job_dir(settings, "job-1")
+    (root / "commands.jsonl").write_text("commands", encoding="utf-8")
+    (root / "pipeline_manifest.json").write_text("manifest", encoding="utf-8")
+    real_move = shutil.move
+    forward_moves = 0
+
+    def flaky_move(src: str, dst: str):
+        nonlocal forward_moves
+        source = Path(src)
+        if source.parent == root:
+            forward_moves += 1
+            if forward_moves == 2:
+                raise OSError("move failed")
+        return real_move(src, dst)
+
+    monkeypatch.setattr("openphonic.services.storage.shutil.move", flaky_move)
+
+    with pytest.raises(OSError, match="move failed"):
+        archive_job_attempt(settings, "job-1", "attempt-new")
+
+    assert (root / "commands.jsonl").read_text(encoding="utf-8") == "commands"
+    assert (root / "pipeline_manifest.json").read_text(encoding="utf-8") == "manifest"
+    assert not (root / "attempts" / "attempt-new" / "commands.jsonl").exists()

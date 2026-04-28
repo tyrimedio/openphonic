@@ -1,9 +1,15 @@
 from pathlib import Path
 
-from openphonic.core.database import create_job, get_job, init_db
+from openphonic.core.database import create_job, get_job, init_db, update_job
 from openphonic.core.settings import get_settings
 from openphonic.pipeline.runner import PipelineResult
-from openphonic.services.jobs import run_job
+from openphonic.services.jobs import (
+    INTERRUPTED_JOB_MESSAGE,
+    recover_interrupted_jobs,
+    retry_failed_job,
+    run_job,
+)
+from openphonic.services.storage import job_dir
 
 
 class SuccessfulRunner:
@@ -83,3 +89,144 @@ def test_run_job_records_failure_without_traceback_printing(tmp_path, monkeypatc
     assert record.error_message == "boom"
     events = (tmp_path / "data/jobs/job-2/job-events.jsonl").read_text(encoding="utf-8")
     assert "job.failed" in events
+
+
+def test_recover_interrupted_jobs_marks_abandoned_jobs_failed(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    running_input = tmp_path / "running.wav"
+    queued_input = tmp_path / "queued.wav"
+    running_input.write_bytes(b"audio")
+    queued_input.write_bytes(b"audio")
+    create_job(
+        db_path,
+        job_id="running-job",
+        original_filename="running.wav",
+        input_path=running_input,
+    )
+    create_job(
+        db_path,
+        job_id="queued-job",
+        original_filename="queued.wav",
+        input_path=queued_input,
+    )
+    update_job(db_path, "running-job", status="running", current_stage="loudness", progress=75)
+
+    recovered = recover_interrupted_jobs()
+
+    running = get_job(db_path, "running-job")
+    queued = get_job(db_path, "queued-job")
+    assert recovered == 2
+    assert running is not None
+    assert running.status == "failed"
+    assert running.current_stage == "interrupted"
+    assert running.error_message == INTERRUPTED_JOB_MESSAGE
+    assert queued is not None
+    assert queued.status == "failed"
+    events = (tmp_path / "data/jobs/running-job/job-events.jsonl").read_text(encoding="utf-8")
+    assert "job.interrupted" in events
+    assert "loudness" in events
+
+
+def test_retry_failed_job_archives_artifacts_and_resets_job(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-3", original_filename="input.wav", input_path=input_path)
+    update_job(
+        db_path,
+        "job-3",
+        status="failed",
+        output_path="/old/output.m4a",
+        transcript_path="/old/transcript.json",
+        error_message="boom",
+        current_stage="failed",
+        progress=72,
+    )
+    work_dir = job_dir(get_settings(), "job-3")
+    (work_dir / "commands.jsonl").write_text("old commands", encoding="utf-8")
+    (work_dir / "pipeline_manifest.json").write_text("old manifest", encoding="utf-8")
+
+    retried = retry_failed_job("job-3")
+
+    archived_commands = list((work_dir / "attempts").glob("*/commands.jsonl"))
+    record = get_job(db_path, "job-3")
+    assert retried.status == "queued"
+    assert record is not None
+    assert record.status == "queued"
+    assert record.output_path is None
+    assert record.transcript_path is None
+    assert record.error_message is None
+    assert record.current_stage == "queued"
+    assert record.progress == 0
+    assert archived_commands
+    assert archived_commands[0].read_text(encoding="utf-8") == "old commands"
+    assert (work_dir / "job-events.jsonl").exists()
+    retry_events = (work_dir / "job-events.jsonl").read_text(encoding="utf-8")
+    assert "job.retry_queued" in retry_events
+
+
+def test_retry_failed_job_claims_before_archiving(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-4", original_filename="input.wav", input_path=input_path)
+    update_job(db_path, "job-4", status="failed", error_message="boom", current_stage="failed")
+    work_dir = job_dir(get_settings(), "job-4")
+    (work_dir / "commands.jsonl").write_text("old commands", encoding="utf-8")
+    archived: list[str] = []
+
+    def fake_archive_job_attempt(settings, job_id: str, archive_name: str):
+        _ = settings
+        record = get_job(db_path, job_id)
+        assert record is not None
+        assert record.status == "queued"
+        archived.append(archive_name)
+        return work_dir / "attempts" / archive_name
+
+    monkeypatch.setattr("openphonic.services.jobs.archive_job_attempt", fake_archive_job_attempt)
+
+    retry_failed_job("job-4")
+
+    assert archived
+
+
+def test_retry_failed_job_restores_failed_state_when_archiving_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-5", original_filename="input.wav", input_path=input_path)
+    update_job(
+        db_path,
+        "job-5",
+        status="failed",
+        output_path="/old/output.m4a",
+        transcript_path="/old/transcript.json",
+        error_message="boom",
+        current_stage="failed",
+        progress=72,
+    )
+
+    def failing_archive_job_attempt(settings, job_id: str, archive_name: str):
+        _ = settings, job_id, archive_name
+        raise OSError("archive unavailable")
+
+    monkeypatch.setattr("openphonic.services.jobs.archive_job_attempt", failing_archive_job_attempt)
+
+    try:
+        retry_failed_job("job-5")
+    except OSError as exc:
+        assert str(exc) == "archive unavailable"
+    else:  # pragma: no cover - assertion guard
+        raise AssertionError("Expected archive failure.")
+
+    record = get_job(db_path, "job-5")
+    assert record is not None
+    assert record.status == "failed"
+    assert record.output_path == "/old/output.m4a"
+    assert record.transcript_path == "/old/transcript.json"
+    assert record.error_message == "boom"
+    assert record.current_stage == "failed"
+    assert record.progress == 72

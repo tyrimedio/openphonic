@@ -2,7 +2,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from openphonic.core.database import create_job, init_db
+from openphonic.core.database import create_job, get_job, init_db, update_job
 from openphonic.core.settings import get_settings
 from openphonic.main import create_app
 from openphonic.services.storage import job_dir
@@ -77,3 +77,47 @@ def test_artifact_download_rejects_missing_and_traversal_paths(tmp_path, monkeyp
 
     assert missing_response.status_code == 404
     assert traversal_response.status_code == 400
+
+
+def test_retry_failed_job_route_requeues_and_runs_background_task(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+
+    update_job(db_path, "job-1", status="failed", error_message="boom", current_stage="failed")
+    work_dir = job_dir(get_settings(), "job-1")
+    (work_dir / "commands.jsonl").write_text("old commands", encoding="utf-8")
+    ran: list[str] = []
+
+    def fake_run_job(job_id: str) -> None:
+        ran.append(job_id)
+
+    monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+
+    with TestClient(create_app()) as client:
+        response = client.post("/api/jobs/job-1/retry")
+
+    record = get_job(db_path, "job-1")
+    assert response.status_code == 200
+    assert response.json()["id"] == "job-1"
+    assert ran == ["job-1"]
+    assert record is not None
+    assert record.status == "queued"
+    assert list((work_dir / "attempts").glob("*/commands.jsonl"))
+
+
+def test_retry_rejects_non_failed_jobs(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    update_job(db_path, "job-1", status="succeeded", current_stage="complete", progress=100)
+
+    with TestClient(create_app()) as client:
+        response = client.post("/api/jobs/job-1/retry")
+
+    assert response.status_code == 409

@@ -239,6 +239,11 @@ dd {
   margin-bottom: 24px;
 }
 
+.inline-form {
+  display: inline-flex;
+  margin: 0;
+}
+
 .actions.compact {
   margin-bottom: 0;
 }

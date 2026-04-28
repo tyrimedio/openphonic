@@ -52,6 +52,11 @@
         {% if job.status == "succeeded" and job.output_path %}
           <a class="button" href="/api/jobs/{{ job.id }}/download">Download audio</a>
         {% endif %}
+        {% if job.status == "failed" %}
+          <form class="inline-form" action="/jobs/{{ job.id }}/retry" method="post">
+            <button class="button" type="submit">Retry job</button>
+          </form>
+        {% endif %}
         {% if job.transcript_path %}
           <a class="button secondary" href="/api/jobs/{{ job.id }}/transcript">Transcript</a>
         {% endif %}

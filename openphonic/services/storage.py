@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,32 @@ def job_dir(settings: Settings, job_id: str) -> Path:
     directory = settings.jobs_dir / job_id
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def archive_job_attempt(settings: Settings, job_id: str, archive_name: str) -> Path | None:
+    root = job_dir(settings, job_id)
+    entries = sorted(path for path in root.iterdir() if path.name != "attempts")
+    if not entries:
+        return None
+
+    archive_dir = root / "attempts" / safe_filename(archive_name)
+    archive_dir.mkdir(parents=True, exist_ok=False)
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for path in entries:
+            destination = archive_dir / path.name
+            shutil.move(str(path), destination)
+            moved.append((destination, path))
+    except Exception:
+        for destination, original in reversed(moved):
+            if destination.exists() and not original.exists():
+                shutil.move(str(destination), original)
+        try:
+            archive_dir.rmdir()
+        except OSError:
+            pass
+        raise
+    return archive_dir
 
 
 def _job_root(settings: Settings, job_id: str) -> Path:

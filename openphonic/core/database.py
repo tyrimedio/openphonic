@@ -38,6 +38,12 @@ class JobRecord:
         return data
 
 
+@dataclass(frozen=True)
+class RetryClaim:
+    previous: JobRecord
+    current: JobRecord
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -130,6 +136,51 @@ def list_jobs(db_path: Path, limit: int = 100) -> list[JobRecord]:
             "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
     return [JobRecord(**dict(row)) for row in rows]
+
+
+def list_jobs_by_status(db_path: Path, statuses: tuple[str, ...]) -> list[JobRecord]:
+    if not statuses:
+        return []
+    placeholders = ", ".join("?" for _ in statuses)
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            f"SELECT * FROM jobs WHERE status IN ({placeholders}) ORDER BY created_at ASC",
+            statuses,
+        ).fetchall()
+    return [JobRecord(**dict(row)) for row in rows]
+
+
+def claim_failed_job_for_retry(db_path: Path, job_id: str) -> RetryClaim | None:
+    with connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        previous = JobRecord(**dict(row))
+        if previous.status != "failed":
+            return None
+
+        now = utc_now()
+        connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?,
+                output_path = NULL,
+                transcript_path = NULL,
+                error_message = NULL,
+                current_stage = ?,
+                progress = ?,
+                started_at = NULL,
+                completed_at = NULL,
+                updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            ("queued", "queued", 0, now, job_id, "failed"),
+        )
+        row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:  # pragma: no cover - impossible after successful update
+            raise KeyError(job_id)
+        return RetryClaim(previous=previous, current=JobRecord(**dict(row)))
 
 
 def update_job(db_path: Path, job_id: str, **fields: Any) -> JobRecord:
