@@ -163,3 +163,28 @@ def test_retry_failed_job_archives_artifacts_and_resets_job(tmp_path, monkeypatc
     assert (work_dir / "job-events.jsonl").exists()
     retry_events = (work_dir / "job-events.jsonl").read_text(encoding="utf-8")
     assert "job.retry_queued" in retry_events
+
+
+def test_retry_failed_job_claims_before_archiving(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-4", original_filename="input.wav", input_path=input_path)
+    update_job(db_path, "job-4", status="failed", error_message="boom", current_stage="failed")
+    work_dir = job_dir(get_settings(), "job-4")
+    (work_dir / "commands.jsonl").write_text("old commands", encoding="utf-8")
+    archived: list[str] = []
+
+    def fake_archive_job_attempt(settings, job_id: str, archive_name: str):
+        _ = settings
+        record = get_job(db_path, job_id)
+        assert record is not None
+        assert record.status == "queued"
+        archived.append(archive_name)
+        return work_dir / "attempts" / archive_name
+
+    monkeypatch.setattr("openphonic.services.jobs.archive_job_attempt", fake_archive_job_attempt)
+
+    retry_failed_job("job-4")
+
+    assert archived

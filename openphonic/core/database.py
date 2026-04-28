@@ -144,6 +144,33 @@ def list_jobs_by_status(db_path: Path, statuses: tuple[str, ...]) -> list[JobRec
     return [JobRecord(**dict(row)) for row in rows]
 
 
+def claim_failed_job_for_retry(db_path: Path, job_id: str) -> JobRecord | None:
+    now = utc_now()
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?,
+                output_path = NULL,
+                transcript_path = NULL,
+                error_message = NULL,
+                current_stage = ?,
+                progress = ?,
+                started_at = NULL,
+                completed_at = NULL,
+                updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            ("queued", "queued", 0, now, job_id, "failed"),
+        )
+        if cursor.rowcount != 1:
+            return None
+    record = get_job(db_path, job_id)
+    if record is None:  # pragma: no cover - impossible after successful update
+        raise KeyError(job_id)
+    return record
+
+
 def update_job(db_path: Path, job_id: str, **fields: Any) -> JobRecord:
     unknown = set(fields) - UPDATE_FIELDS
     if unknown:

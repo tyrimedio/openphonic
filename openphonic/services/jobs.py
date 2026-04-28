@@ -4,7 +4,14 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from openphonic.core.database import get_job, list_jobs, list_jobs_by_status, update_job, utc_now
+from openphonic.core.database import (
+    claim_failed_job_for_retry,
+    get_job,
+    list_jobs,
+    list_jobs_by_status,
+    update_job,
+    utc_now,
+)
 from openphonic.core.logging import append_event, log_event
 from openphonic.core.settings import get_settings
 from openphonic.pipeline.config import PipelineConfig
@@ -76,26 +83,14 @@ def recover_interrupted_jobs() -> int:
 
 def retry_failed_job(job_id: str):
     settings = get_settings()
-    record = get_job(settings.database_path, job_id)
-    if record is None:
-        raise KeyError(job_id)
-    if record.status != "failed":
+    retried = claim_failed_job_for_retry(settings.database_path, job_id)
+    if retried is None:
+        record = get_job(settings.database_path, job_id)
+        if record is None:
+            raise KeyError(job_id)
         raise JobRetryError(f"Only failed jobs can be retried. Current status: {record.status}.")
-
     archive_dir = archive_job_attempt(settings, job_id, _attempt_archive_name())
     work_dir = job_dir(settings, job_id)
-    retried = update_job(
-        settings.database_path,
-        job_id,
-        status="queued",
-        output_path=None,
-        transcript_path=None,
-        error_message=None,
-        current_stage="queued",
-        progress=0,
-        started_at=None,
-        completed_at=None,
-    )
     append_event(
         work_dir / "job-events.jsonl",
         "job.retry_queued",
