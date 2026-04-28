@@ -56,17 +56,31 @@ class IngestStage(PipelineStage):
 class DeepFilterNetStage(PipelineStage):
     def run(self, input_path: Path, work_dir: Path) -> Path:
         settings = get_settings()
+        stage = self.config.stage("noise_reduction")
         binary = settings.deepfilternet_bin
         if shutil.which(binary) is None:
             raise StageError(
                 "DeepFilterNet stage is enabled, but the deepFilter CLI was not found. "
                 "Install DeepFilterNet or disable stages.noise_reduction."
             )
+        command = [binary]
+        attenuation_db = stage.get("attenuation_db")
+        if attenuation_db is not None:
+            try:
+                attenuation_limit = float(attenuation_db)
+            except (TypeError, ValueError) as exc:
+                raise StageError("DeepFilterNet attenuation_db must be an integer.") from exc
+            if not attenuation_limit.is_integer():
+                raise StageError("DeepFilterNet attenuation_db must be an integer.")
+            if attenuation_limit <= 0:
+                raise StageError("DeepFilterNet attenuation_db must be greater than zero.")
+            command.extend(["--atten-lim", str(int(attenuation_limit))])
 
         output_dir = work_dir / "02_deepfilternet"
         output_dir.mkdir(parents=True, exist_ok=True)
+        command.extend([str(input_path), "-o", str(output_dir)])
         completed = subprocess.run(
-            [binary, str(input_path), "-o", str(output_dir)],
+            command,
             check=False,
             text=True,
             capture_output=True,

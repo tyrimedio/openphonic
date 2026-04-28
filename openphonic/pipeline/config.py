@@ -6,7 +6,7 @@ from typing import Any
 
 import yaml
 
-CONFIG_ROOT = Path(__file__).resolve().parents[2] / "config"
+CONFIG_ROOT = Path(__file__).resolve().parents[1] / "config"
 
 
 @dataclass(frozen=True)

@@ -41,6 +41,9 @@ openphonic = "openphonic.cli:main"
 [tool.setuptools.packages.find]
 include = ["openphonic*"]
 
+[tool.setuptools.package-data]
+openphonic = ["config/*.yml", "config/presets/*.yml"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
