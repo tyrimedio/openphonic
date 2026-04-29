@@ -76,6 +76,7 @@ The web uploader currently exposes these built-in presets:
 - `podcast-default`: FFmpeg ingest, conservative silence trim, and two-pass loudness normalization.
 - `speech-cleanup`: `podcast-default` plus DeepFilterNet speech enhancement.
 - `vocal-isolation`: `podcast-default` plus Demucs vocal isolation with the `htdemucs` model and `vocals` stem.
+- `transcript-review`: `podcast-default` plus faster-whisper transcription and non-destructive cut suggestions.
 
 The ML presets are explicit opt-ins. The uploader preflights enabled optional
 stages before queueing a job and rejects presets whose local tools, Python

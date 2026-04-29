@@ -120,6 +120,7 @@ def artifact_version(path: Path) -> str:
 def test_index_route_renders(tmp_path, monkeypatch) -> None:
     configure_tmp_settings(tmp_path, monkeypatch)
     monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: False)
+    monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
     preset_dir = get_settings().preset_dir
     preset_dir.mkdir(parents=True)
     (preset_dir / "daily-show.yml").write_text(
@@ -143,8 +144,10 @@ stages:
     assert 'value="podcast-default"' in response.text
     assert 'value="speech-cleanup"' in response.text
     assert 'value="vocal-isolation"' in response.text
+    assert 'value="transcript-review"' in response.text
     assert 'value="custom:daily-show"' in response.text
     assert "Speech cleanup (unavailable)" in response.text
+    assert "Transcript review (unavailable)" in response.text
     assert "Daily show" in response.text
 
 
@@ -257,6 +260,38 @@ def test_create_job_rejects_unavailable_ml_preset_before_queueing(
     assert "DeepFilterNet noise reduction is enabled" in response.json()["detail"]
     assert list_jobs(db_path) == []
     assert started == []
+
+
+def test_create_job_stores_transcript_review_preset_when_ml_is_available(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    started: list[str] = []
+
+    def fake_run_job(job_id: str) -> None:
+        started.append(job_id)
+
+    monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+    monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: True)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs",
+            data={"preset": "transcript-review"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 303
+    job_id = response.headers["location"].removeprefix("/jobs/")
+    record = get_job(db_path, job_id)
+    assert record is not None
+    assert record.to_dict()["config"] == {
+        "preset": "transcript-review",
+        "preset_label": "Transcript review",
+    }
+    assert started == [job_id]
 
 
 def test_create_job_stores_custom_preset(tmp_path, monkeypatch) -> None:
