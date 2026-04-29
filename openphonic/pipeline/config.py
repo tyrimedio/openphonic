@@ -92,6 +92,14 @@ BUILTIN_PRESETS = (
         description="Podcast default plus faster-whisper transcription and cut suggestions.",
         path=CONFIG_ROOT / "presets" / "transcript-review.yml",
     ),
+    PipelinePreset(
+        id="speaker-diarization",
+        label="Speaker diarization",
+        description=(
+            "Podcast default plus faster-whisper transcription and pyannote speaker labels."
+        ),
+        path=CONFIG_ROOT / "presets" / "speaker-diarization.yml",
+    ),
 )
 
 
