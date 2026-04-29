@@ -1240,6 +1240,46 @@ def test_retry_preflights_stored_preset_before_mutating_job(
     assert (work_dir / "commands.jsonl").read_text(encoding="utf-8") == "old commands"
 
 
+def test_retry_wraps_malformed_preset_preflight_errors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    broken_config = tmp_path / "broken-default.yml"
+    broken_config.write_text(
+        """
+name: broken
+stages: true
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENPHONIC_PIPELINE_CONFIG", str(broken_config))
+    get_settings.cache_clear()
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    update_job(db_path, "job-1", status="failed", error_message="boom", current_stage="failed")
+    work_dir = job_dir(get_settings(), "job-1")
+    (work_dir / "commands.jsonl").write_text("old commands", encoding="utf-8")
+    ran: list[str] = []
+
+    def fake_run_job(job_id: str) -> None:
+        ran.append(job_id)
+
+    monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+
+    with TestClient(create_app()) as client:
+        response = client.post("/api/jobs/job-1/retry")
+
+    record = get_job(db_path, "job-1")
+    assert response.status_code == 400
+    assert "Invalid pipeline preset" in response.json()["detail"]
+    assert ran == []
+    assert record is not None
+    assert record.status == "failed"
+    assert not (work_dir / "attempts").exists()
+
+
 def test_retry_rejects_non_failed_jobs(tmp_path, monkeypatch) -> None:
     db_path = configure_tmp_settings(tmp_path, monkeypatch)
     input_path = tmp_path / "input.wav"

@@ -760,11 +760,11 @@ def _preset_options(settings) -> list[dict[str, str | bool]]:
     for preset in available_presets(settings.pipeline_config, settings.preset_dir):
         try:
             config = PipelineConfig.from_path(preset.path)
+            issues = pipeline_preflight_issues(config, settings)
         except Exception as exc:
             available = False
             readiness = f"Preset cannot be loaded: {exc}"
         else:
-            issues = pipeline_preflight_issues(config, settings)
             available = not issues
             readiness = "Ready" if available else format_preflight_issues(issues)
         options.append(
@@ -1186,12 +1186,12 @@ def _preflight_preset_or_400(preset: str | None) -> None:
             pipeline_config = PipelineConfig.from_path(preset_info.path)
         else:
             pipeline_config = PipelineConfig.from_path(settings.pipeline_config)
+        preflight_issues = pipeline_preflight_issues(pipeline_config, settings)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid pipeline preset: {exc}") from exc
 
-    preflight_issues = pipeline_preflight_issues(pipeline_config, settings)
     if preflight_issues:
         raise HTTPException(
             status_code=400,
