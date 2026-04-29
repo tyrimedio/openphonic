@@ -10,7 +10,7 @@ from openphonic.api.routes import (
     MAX_TRANSCRIPT_CORRECTION_FORM_BYTES,
     _read_limited_correction_form,
 )
-from openphonic.core.database import create_job, get_job, init_db, update_job
+from openphonic.core.database import create_job, get_job, init_db, list_jobs, update_job
 from openphonic.core.settings import get_settings
 from openphonic.main import create_app
 from openphonic.services.storage import job_dir
@@ -119,6 +119,7 @@ def artifact_version(path: Path) -> str:
 
 def test_index_route_renders(tmp_path, monkeypatch) -> None:
     configure_tmp_settings(tmp_path, monkeypatch)
+    monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: False)
     preset_dir = get_settings().preset_dir
     preset_dir.mkdir(parents=True)
     (preset_dir / "daily-show.yml").write_text(
@@ -143,6 +144,7 @@ stages:
     assert 'value="speech-cleanup"' in response.text
     assert 'value="vocal-isolation"' in response.text
     assert 'value="custom:daily-show"' in response.text
+    assert "Speech cleanup (unavailable)" in response.text
     assert "Daily show" in response.text
 
 
@@ -209,6 +211,7 @@ def test_create_job_stores_selected_preset(tmp_path, monkeypatch) -> None:
         started.append(job_id)
 
     monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+    monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: True)
 
     with TestClient(create_app()) as client:
         response = client.post(
@@ -227,6 +230,33 @@ def test_create_job_stores_selected_preset(tmp_path, monkeypatch) -> None:
         "preset_label": "Speech cleanup",
     }
     assert started == [job_id]
+
+
+def test_create_job_rejects_unavailable_ml_preset_before_queueing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    started: list[str] = []
+
+    def fake_run_job(job_id: str) -> None:
+        started.append(job_id)
+
+    monkeypatch.setattr("openphonic.api.routes.run_job", fake_run_job)
+    monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: False)
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/jobs",
+            data={"preset": "speech-cleanup"},
+            files={"file": ("input.wav", b"audio", "audio/wav")},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 400
+    assert "DeepFilterNet noise reduction is enabled" in response.json()["detail"]
+    assert list_jobs(db_path) == []
+    assert started == []
 
 
 def test_create_job_stores_custom_preset(tmp_path, monkeypatch) -> None:

@@ -12,11 +12,13 @@ from fastapi.templating import Jinja2Templates
 from openphonic.core.database import create_job, init_db
 from openphonic.core.settings import get_settings
 from openphonic.pipeline.config import (
+    PipelineConfig,
     TargetFormat,
     available_presets,
     load_pipeline_config_for_preset,
     preset_by_id,
 )
+from openphonic.pipeline.preflight import format_preflight_issues, pipeline_preflight_issues
 from openphonic.services.cuts import (
     CUT_APPLY_MANIFEST_ARTIFACT,
     CutApplyError,
@@ -740,19 +742,42 @@ def healthz() -> dict[str, str]:
 @router.get("/", response_class=HTMLResponse)
 def index(request: Request):
     _ensure_ready()
+    settings = get_settings()
     return templates.TemplateResponse(
         request,
         "index.html",
         {
             "request": request,
             "jobs": recent_jobs(50),
-            "settings": get_settings(),
-            "presets": available_presets(
-                get_settings().pipeline_config,
-                get_settings().preset_dir,
-            ),
+            "settings": settings,
+            "presets": _preset_options(settings),
         },
     )
+
+
+def _preset_options(settings) -> list[dict[str, str | bool]]:
+    options: list[dict[str, str | bool]] = []
+    for preset in available_presets(settings.pipeline_config, settings.preset_dir):
+        try:
+            config = PipelineConfig.from_path(preset.path)
+        except Exception as exc:
+            available = False
+            readiness = f"Preset cannot be loaded: {exc}"
+        else:
+            issues = pipeline_preflight_issues(config, settings)
+            available = not issues
+            readiness = "Ready" if available else format_preflight_issues(issues)
+        options.append(
+            {
+                "id": preset.id,
+                "label": preset.label,
+                "description": preset.description,
+                "available": available,
+                "readiness": readiness,
+                "title": f"{preset.description} {readiness}",
+            }
+        )
+    return options
 
 
 @router.get("/jobs/{job_id}", response_class=HTMLResponse)
@@ -1153,6 +1178,20 @@ async def _create_job(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        pipeline_config = PipelineConfig.from_path(preset_info.path)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid pipeline preset: {exc}") from exc
+    preflight_issues = pipeline_preflight_issues(pipeline_config, settings)
+    if preflight_issues:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Preset '{preset_info.label}' cannot run on this host. "
+                f"{format_preflight_issues(preflight_issues)}"
+            ),
+        )
 
     job_id, destination = reserve_upload(file.filename)
     try:
