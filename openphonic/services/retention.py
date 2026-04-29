@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-from openphonic.core.database import delete_job, list_completed_jobs_before
+from openphonic.core.database import delete_completed_job_before, list_completed_jobs_before
 from openphonic.core.logging import log_event
 from openphonic.core.settings import get_settings
 from openphonic.services.storage import delete_job_storage
@@ -30,10 +30,12 @@ def cleanup_expired_jobs(now: datetime | None = None) -> RetentionCleanupResult:
 
     deleted_job_ids: list[str] = []
     failed_job_ids: dict[str, str] = {}
-    for record in list_completed_jobs_before(settings.database_path, cutoff):
+    for candidate in list_completed_jobs_before(settings.database_path, cutoff):
+        record = delete_completed_job_before(settings.database_path, candidate.id, cutoff)
+        if record is None:
+            continue
         try:
             delete_job_storage(settings, record.id)
-            delete_job(settings.database_path, record.id)
         except Exception as exc:
             failed_job_ids[record.id] = str(exc)
             log_event(

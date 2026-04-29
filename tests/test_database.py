@@ -3,7 +3,7 @@ from pathlib import Path
 from openphonic.core.database import (
     claim_failed_job_for_retry,
     create_job,
-    delete_job,
+    delete_completed_job_before,
     init_db,
     list_completed_jobs_before,
     list_jobs,
@@ -109,5 +109,32 @@ def test_completed_jobs_before_returns_only_terminal_expired_jobs(tmp_path) -> N
     expired = list_completed_jobs_before(db_path, "2026-01-05T00:00:00+00:00")
 
     assert [job.id for job in expired] == ["old-success", "old-failed"]
-    assert delete_job(db_path, "old-success") is True
-    assert delete_job(db_path, "old-success") is False
+
+
+def test_delete_completed_job_before_is_conditional(tmp_path) -> None:
+    db_path = tmp_path / "openphonic.sqlite3"
+    init_db(db_path)
+    create_job(
+        db_path,
+        job_id="old-failed",
+        original_filename="input.wav",
+        input_path=Path("/tmp/input.wav"),
+    )
+    update_job(
+        db_path,
+        "old-failed",
+        status="failed",
+        completed_at="2026-01-01T00:00:00+00:00",
+    )
+
+    stale_cutoff = "2025-12-31T00:00:00+00:00"
+    matching_cutoff = "2026-01-05T00:00:00+00:00"
+    assert delete_completed_job_before(db_path, "old-failed", stale_cutoff) is None
+
+    deleted = delete_completed_job_before(db_path, "old-failed", matching_cutoff)
+    second_delete = delete_completed_job_before(db_path, "old-failed", matching_cutoff)
+
+    assert deleted is not None
+    assert deleted.id == "old-failed"
+    assert deleted.status == "failed"
+    assert second_delete is None

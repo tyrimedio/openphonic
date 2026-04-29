@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from openphonic.core.database import create_job, get_job, init_db, update_job
+from openphonic.core.database import JobRecord, create_job, get_job, init_db, update_job
 from openphonic.core.settings import get_settings
 from openphonic.services.retention import cleanup_expired_jobs
 
@@ -74,3 +74,41 @@ def test_cleanup_expired_jobs_is_disabled_when_retention_is_zero(tmp_path, monke
     assert result.deleted_job_ids == []
     assert get_job(db_path, "old-job") is not None
     assert (get_settings().jobs_dir / "old-job").exists()
+
+
+def test_cleanup_expired_jobs_skips_rows_that_changed_after_snapshot(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch, retention_days=7)
+    create_completed_job(db_path, "old-job", completed_at="2026-04-01T00:00:00+00:00")
+    stale_record = get_job(db_path, "old-job")
+    assert stale_record is not None
+    update_job(
+        db_path,
+        "old-job",
+        status="queued",
+        output_path=None,
+        completed_at=None,
+        current_stage="queued",
+    )
+
+    def stale_expired_jobs(db_path_arg: Path, cutoff: str) -> list[JobRecord]:
+        _ = db_path_arg, cutoff
+        return [stale_record]
+
+    monkeypatch.setattr(
+        "openphonic.services.retention.list_completed_jobs_before",
+        stale_expired_jobs,
+    )
+
+    result = cleanup_expired_jobs(now=datetime(2026, 4, 28, tzinfo=UTC))
+
+    settings = get_settings()
+    current = get_job(db_path, "old-job")
+    assert current is not None
+    assert current.status == "queued"
+    assert result.deleted_job_ids == []
+    assert result.failed_job_ids == {}
+    assert (settings.uploads_dir / "old-job").exists()
+    assert (settings.jobs_dir / "old-job").exists()

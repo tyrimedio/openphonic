@@ -165,10 +165,35 @@ def list_completed_jobs_before(db_path: Path, cutoff: str) -> list[JobRecord]:
     return [JobRecord(**dict(row)) for row in rows]
 
 
-def delete_job(db_path: Path, job_id: str) -> bool:
+def delete_completed_job_before(db_path: Path, job_id: str, cutoff: str) -> JobRecord | None:
     with connect(db_path) as connection:
-        cursor = connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-        return cursor.rowcount > 0
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute(
+            """
+            SELECT * FROM jobs
+            WHERE id = ?
+              AND status IN ('succeeded', 'failed')
+              AND completed_at IS NOT NULL
+              AND completed_at < ?
+            """,
+            (job_id, cutoff),
+        ).fetchone()
+        if row is None:
+            return None
+        record = JobRecord(**dict(row))
+        cursor = connection.execute(
+            """
+            DELETE FROM jobs
+            WHERE id = ?
+              AND status IN ('succeeded', 'failed')
+              AND completed_at IS NOT NULL
+              AND completed_at < ?
+            """,
+            (job_id, cutoff),
+        )
+        if cursor.rowcount != 1:  # pragma: no cover - guarded by BEGIN IMMEDIATE
+            return None
+        return record
 
 
 def claim_failed_job_for_retry(db_path: Path, job_id: str) -> RetryClaim | None:
