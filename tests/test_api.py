@@ -495,6 +495,62 @@ def test_transcript_page_renders_segments_and_word_timestamps(tmp_path, monkeypa
     assert "/api/jobs/job-1/artifacts/transcript.vtt" in response.text
 
 
+def test_transcript_page_renders_speaker_labels_from_diarization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    transcript_path = work_dir / "transcript.json"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "engine": "faster-whisper",
+                "model": "tiny",
+                "language": "en",
+                "duration": 2.8,
+                "segments": [
+                    {"id": 1, "start": 0.0, "end": 1.2, "text": " Welcome back"},
+                    {"id": 2, "start": 1.45, "end": 2.7, "text": " Thanks for having me"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_test_diarization(work_dir)
+    (work_dir / "speaker_corrections.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_artifact": "diarization.json",
+                "speakers": [{"speaker": "SPEAKER_00", "label": "Host"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    update_job(
+        db_path,
+        "job-1",
+        status="succeeded",
+        transcript_path=str(transcript_path),
+        current_stage="complete",
+        progress=100,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.get("/jobs/job-1/transcript")
+
+    assert response.status_code == 200
+    assert "Speakers" in response.text
+    assert "Host" in response.text
+    assert "SPEAKER_01" in response.text
+    assert "/jobs/job-1/speakers" in response.text
+
+
 def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) -> None:
     db_path = configure_tmp_settings(tmp_path, monkeypatch)
     input_path = tmp_path / "input.wav"

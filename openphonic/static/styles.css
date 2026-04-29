@@ -371,6 +371,29 @@ dd {
   font-size: 13px;
 }
 
+.segment-meta {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.speaker-chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 26px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #eef6ff;
+  color: #164e63;
+  padding: 2px 7px;
+  font-size: 12px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
 .segment p,
 .word-list {
   min-width: 0;

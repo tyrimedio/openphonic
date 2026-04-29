@@ -39,6 +39,12 @@
             <span>Words</span>
             <strong>{{ word_count }}</strong>
           </div>
+          {% if speaker_count is not none %}
+            <div>
+              <span>Speakers</span>
+              <strong>{{ speaker_count }}</strong>
+            </div>
+          {% endif %}
           <div>
             <span>Model</span>
             <strong>{{ transcript.model or "-" }}</strong>
@@ -54,6 +60,9 @@
         {% if corrections_url %}
           <a class="button secondary" href="{{ corrections_url }}">Corrections JSON</a>
         {% endif %}
+        {% if speaker_url %}
+          <a class="button secondary" href="{{ speaker_url }}">Speakers</a>
+        {% endif %}
         <a class="button secondary" href="{{ edit_url }}">Edit transcript</a>
       </section>
 
@@ -66,8 +75,17 @@
           <div class="transcript-list">
             {% for segment in segments %}
               <article class="segment">
-                <div class="segment-time mono">
-                  {{ segment.start }} - {{ segment.end }}
+                <div class="segment-meta">
+                  <div class="segment-time mono">
+                    {{ segment.start }} - {{ segment.end }}
+                  </div>
+                  {% if segment.speaker %}
+                    <a
+                      class="speaker-chip"
+                      href="{{ speaker_url }}"
+                      title="{{ segment.speaker.speaker }}"
+                    >{{ segment.speaker.label }}</a>
+                  {% endif %}
                 </div>
                 <p>
                   {{ segment.text }}
