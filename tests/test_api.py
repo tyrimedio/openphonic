@@ -411,6 +411,8 @@ def test_job_artifact_routes_list_and_serve_files(tmp_path, monkeypatch) -> None
             "pipeline_manifest.json",
         ]
         assert json.loads(bundle.read("pipeline_manifest.json")) == {"status": "failed"}
+    bundle_root = get_settings().data_dir / ".artifact-bundles"
+    assert not bundle_root.exists() or list(bundle_root.iterdir()) == []
     assert manifest_response.status_code == 200
     assert manifest_response.json() == {"status": "failed"}
     assert events_response.status_code == 200
@@ -479,6 +481,8 @@ def test_artifact_bundle_opens_inputs_before_streaming(tmp_path, monkeypatch) ->
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Artifact not found."
+    bundle_root = get_settings().data_dir / ".artifact-bundles"
+    assert not bundle_root.exists() or list(bundle_root.iterdir()) == []
 
 
 def test_transcript_page_renders_segments_and_word_timestamps(tmp_path, monkeypatch) -> None:

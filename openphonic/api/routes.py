@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
+import uuid
 import zipfile
 from pathlib import Path
-from typing import Annotated, Any, BinaryIO
+from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
@@ -164,59 +166,61 @@ def _artifact_bundle_response(job_id: str):
         raise HTTPException(status_code=404, detail="No artifacts available.")
 
     try:
-        artifact_inputs = _open_artifact_bundle_inputs(settings, job_id, artifacts)
+        snapshot_dir, artifact_paths = _snapshot_artifact_bundle_inputs(settings, job_id, artifacts)
     except OSError as exc:
-        raise HTTPException(status_code=500, detail="Artifact could not be opened.") from exc
+        raise HTTPException(status_code=500, detail="Artifact could not be snapshotted.") from exc
 
     return StreamingResponse(
-        _stream_artifact_bundle(artifact_inputs),
+        _stream_artifact_bundle(artifact_paths, snapshot_dir),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{job_id}-artifacts.zip"'},
     )
 
 
-def _open_artifact_bundle_inputs(
+def _snapshot_artifact_bundle_inputs(
     settings: Any,
     job_id: str,
     artifacts: list[JobArtifact],
-) -> list[tuple[str, BinaryIO]]:
-    artifact_inputs: list[tuple[str, BinaryIO]] = []
+) -> tuple[Path, list[tuple[str, Path]]]:
+    snapshot_dir = settings.data_dir / ".artifact-bundles" / f"{job_id}-{uuid.uuid4().hex}"
+    artifact_paths: list[tuple[str, Path]] = []
     try:
         for artifact in artifacts:
-            path = job_artifact_path(settings, job_id, artifact.name)
-            artifact_inputs.append((artifact.name, path.open("rb")))
+            source = job_artifact_path(settings, job_id, artifact.name)
+            snapshot_path = snapshot_dir / artifact.name
+            snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            snapshot_path.hardlink_to(source)
+            artifact_paths.append((artifact.name, snapshot_path))
     except ValueError as exc:
-        _close_artifact_bundle_inputs(artifact_inputs)
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
-        _close_artifact_bundle_inputs(artifact_inputs)
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
         raise HTTPException(status_code=404, detail="Artifact not found.") from exc
     except OSError:
-        _close_artifact_bundle_inputs(artifact_inputs)
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
         raise
-    return artifact_inputs
+    return snapshot_dir, artifact_paths
 
 
-def _close_artifact_bundle_inputs(artifact_inputs: list[tuple[str, BinaryIO]]) -> None:
-    for _artifact_name, source in artifact_inputs:
-        source.close()
-
-
-def _stream_artifact_bundle(artifact_inputs: list[tuple[str, BinaryIO]]):
+def _stream_artifact_bundle(artifact_paths: list[tuple[str, Path]], snapshot_dir: Path):
     buffer = _ZipStreamBuffer()
     try:
         with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for artifact_name, source in artifact_inputs:
+            for artifact_name, path in artifact_paths:
                 info = zipfile.ZipInfo(artifact_name)
                 info.compress_type = zipfile.ZIP_DEFLATED
-                with archive.open(info, mode="w", force_zip64=True) as target:
+                with (
+                    path.open("rb") as source,
+                    archive.open(info, mode="w", force_zip64=True) as target,
+                ):
                     while chunk := source.read(ARTIFACT_BUNDLE_CHUNK_BYTES):
                         target.write(chunk)
                         yield from buffer.drain()
                 yield from buffer.drain()
         yield from buffer.drain()
     finally:
-        _close_artifact_bundle_inputs(artifact_inputs)
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
 
 
 def _format_bytes(size_bytes: int) -> str:
