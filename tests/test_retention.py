@@ -37,6 +37,7 @@ def create_completed_job(db_path: Path, job_id: str, *, completed_at: str) -> No
     input_path = upload_root / "input.wav"
     input_path.write_bytes(b"input")
     (work_root / "pipeline_manifest.json").write_text("{}", encoding="utf-8")
+    (work_root / "output.m4a").write_bytes(b"output")
     create_job(
         db_path,
         job_id=job_id,
@@ -110,6 +111,35 @@ def test_cleanup_expired_jobs_restores_stale_claims_when_retention_is_zero(
     assert current is not None
     assert current.status == "succeeded"
     assert (get_settings().jobs_dir / "old-job").exists()
+
+
+def test_cleanup_expired_jobs_deletes_stale_claims_with_missing_storage_when_retention_is_zero(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch, retention_days=0)
+    create_completed_job(db_path, "old-job", completed_at="2026-04-01T00:00:00+00:00")
+    claim = claim_completed_job_for_retention(
+        db_path,
+        "old-job",
+        "2026-04-21T00:00:00+00:00",
+    )
+    assert claim is not None
+    settings = get_settings()
+    from openphonic.services.storage import delete_job_storage
+
+    delete_job_storage(settings, "old-job")
+    with connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ?",
+            ("2026-04-27T23:00:00+00:00", "old-job"),
+        )
+
+    result = cleanup_expired_jobs(now=datetime(2026, 4, 28, tzinfo=UTC))
+
+    assert result.deleted_job_ids == ["old-job"]
+    assert result.failed_job_ids == {}
+    assert get_job(db_path, "old-job") is None
 
 
 def test_cleanup_expired_jobs_preserves_row_when_storage_cleanup_fails(
@@ -237,6 +267,34 @@ def test_cleanup_expired_jobs_keeps_stale_claims_unexpired_by_current_policy(
     assert current.status == "succeeded"
     assert (settings.uploads_dir / "old-job").exists()
     assert (settings.jobs_dir / "old-job").exists()
+
+
+def test_cleanup_expired_jobs_deletes_unexpired_stale_claims_with_missing_storage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch, retention_days=30)
+    create_completed_job(db_path, "old-job", completed_at="2026-04-18T00:00:00+00:00")
+    claim = claim_completed_job_for_retention(
+        db_path,
+        "old-job",
+        "2026-04-21T00:00:00+00:00",
+    )
+    assert claim is not None
+    settings = get_settings()
+    (settings.jobs_dir / "old-job").rename(settings.jobs_dir / "old-job-deleted")
+    with connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ?",
+            ("2026-04-27T23:00:00+00:00", "old-job"),
+        )
+
+    result = cleanup_expired_jobs(now=datetime(2026, 4, 28, tzinfo=UTC))
+
+    assert result.deleted_job_ids == ["old-job"]
+    assert result.failed_job_ids == {}
+    assert get_job(db_path, "old-job") is None
+    assert not (settings.uploads_dir / "old-job").exists()
 
 
 def test_cleanup_expired_jobs_skips_rows_that_changed_after_snapshot(
