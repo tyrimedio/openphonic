@@ -209,6 +209,62 @@ def list_retention_cleanup_candidates(
     return [JobRecord(**dict(row)) for row in rows]
 
 
+def restore_stale_retention_claims(
+    db_path: Path,
+    cutoff: str,
+    claim_stale_cutoff: str,
+) -> list[JobRecord]:
+    restored: list[JobRecord] = []
+    now = utc_now()
+    with connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status IN ('retention_cleanup_succeeded', 'retention_cleanup_failed')
+              AND completed_at IS NOT NULL
+              AND completed_at >= ?
+              AND updated_at < ?
+            ORDER BY completed_at ASC
+            """,
+            (cutoff, claim_stale_cutoff),
+        ).fetchall()
+        for row in rows:
+            record = JobRecord(**dict(row))
+            original_status = RETENTION_ORIGINAL_STATUSES[record.status]
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND updated_at = ?
+                  AND completed_at IS NOT NULL
+                  AND completed_at >= ?
+                  AND updated_at < ?
+                """,
+                (
+                    original_status,
+                    now,
+                    record.id,
+                    record.status,
+                    record.updated_at,
+                    cutoff,
+                    claim_stale_cutoff,
+                ),
+            )
+            if cursor.rowcount != 1:
+                continue
+            restored_row = connection.execute(
+                "SELECT * FROM jobs WHERE id = ?",
+                (record.id,),
+            ).fetchone()
+            if restored_row is not None:
+                restored.append(JobRecord(**dict(restored_row)))
+    return restored
+
+
 def claim_completed_job_for_retention(
     db_path: Path,
     job_id: str,

@@ -9,6 +9,7 @@ from openphonic.core.database import (
     delete_retention_claim,
     list_retention_cleanup_candidates,
     restore_retention_claim,
+    restore_stale_retention_claims,
 )
 from openphonic.core.logging import log_event
 from openphonic.core.settings import get_settings
@@ -26,17 +27,36 @@ class RetentionCleanupResult:
 
 def cleanup_expired_jobs(now: datetime | None = None) -> RetentionCleanupResult:
     settings = get_settings()
-    if settings.retention_days <= 0:
-        return RetentionCleanupResult()
-
     current_time = now or datetime.now(UTC)
     if current_time.tzinfo is None:
         current_time = current_time.replace(tzinfo=UTC)
-    cutoff = (current_time - timedelta(days=settings.retention_days)).isoformat(timespec="seconds")
     claim_stale_cutoff = (current_time - RETENTION_CLAIM_STALE_AFTER).isoformat(timespec="seconds")
+
+    if settings.retention_days <= 0:
+        restore_stale_retention_claims(
+            settings.database_path,
+            datetime.min.replace(tzinfo=UTC).isoformat(timespec="seconds"),
+            claim_stale_cutoff,
+        )
+        return RetentionCleanupResult()
+
+    cutoff = (current_time - timedelta(days=settings.retention_days)).isoformat(timespec="seconds")
 
     deleted_job_ids: list[str] = []
     failed_job_ids: dict[str, str] = {}
+    for restored in restore_stale_retention_claims(
+        settings.database_path,
+        cutoff,
+        claim_stale_cutoff,
+    ):
+        log_event(
+            logger,
+            "job.retention_claim_restored",
+            job_id=restored.id,
+            completed_at=restored.completed_at,
+            retention_days=settings.retention_days,
+        )
+
     for candidate in list_retention_cleanup_candidates(
         settings.database_path,
         cutoff,
