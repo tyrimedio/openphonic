@@ -77,8 +77,9 @@ The web uploader currently exposes these built-in presets:
 - `speech-cleanup`: `podcast-default` plus DeepFilterNet speech enhancement.
 - `vocal-isolation`: `podcast-default` plus Demucs vocal isolation with the `htdemucs` model and `vocals` stem.
 
-The ML presets are explicit opt-ins. They fail loudly when the required local
-tool is unavailable rather than pretending cleanup or isolation ran.
+The ML presets are explicit opt-ins. The uploader preflights enabled optional
+stages before queueing a job and rejects presets whose local tools, Python
+packages, model tokens, or configured assets are missing.
 
 You can add per-show presets without changing application code by placing
 `*.yml` or `*.yaml` files in `OPENPHONIC_PRESET_DIR`, which defaults to
