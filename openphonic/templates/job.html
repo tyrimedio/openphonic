@@ -66,6 +66,9 @@
         {% if cut_review_url %}
           <a class="button secondary" href="{{ cut_review_url }}">Cut review</a>
         {% endif %}
+        {% if artifact_bundle_url %}
+          <a class="button secondary" href="{{ artifact_bundle_url }}">Artifacts ZIP</a>
+        {% endif %}
         <a class="button secondary" href="/api/jobs/{{ job.id }}">JSON</a>
       </section>
 

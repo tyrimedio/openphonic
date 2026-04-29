@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
@@ -9,6 +11,7 @@ from urllib.parse import parse_qs, quote
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 
 from openphonic.core.database import create_job, init_db
 from openphonic.core.settings import get_settings
@@ -124,6 +127,36 @@ def _artifact_response(job_id: str, artifact_name: str, media_type: str | None =
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Artifact not found.") from exc
     return FileResponse(path, filename=path.name, media_type=media_type)
+
+
+def _artifact_bundle_response(job_id: str):
+    _ensure_ready()
+    _require_job(job_id)
+    try:
+        artifacts = list_job_artifacts(get_settings(), job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not artifacts:
+        raise HTTPException(status_code=404, detail="No artifacts available.")
+
+    bundle = tempfile.NamedTemporaryFile(prefix=f"{job_id}-artifacts-", suffix=".zip", delete=False)
+    bundle_path = Path(bundle.name)
+    bundle.close()
+    try:
+        with zipfile.ZipFile(bundle_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for artifact in artifacts:
+                path = job_artifact_path(get_settings(), job_id, artifact.name)
+                archive.write(path, arcname=artifact.name)
+    except Exception:
+        bundle_path.unlink(missing_ok=True)
+        raise
+
+    return FileResponse(
+        bundle_path,
+        filename=f"{job_id}-artifacts.zip",
+        media_type="application/zip",
+        background=BackgroundTask(lambda: bundle_path.unlink(missing_ok=True)),
+    )
 
 
 def _format_bytes(size_bytes: int) -> str:
@@ -920,6 +953,7 @@ def job_page(request: Request, job_id: str):
             "request": request,
             "job": record,
             "artifacts": [_artifact_payload(job_id, artifact) for artifact in artifacts],
+            "artifact_bundle_url": f"/api/jobs/{job_id}/artifacts.zip" if artifacts else None,
             "speaker_url": f"/jobs/{job_id}/speakers"
             if "diarization.json" in artifact_names
             else None,
@@ -1464,6 +1498,11 @@ def list_artifacts_api(job_id: str) -> list[dict]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return [_artifact_payload(job_id, artifact) for artifact in artifacts]
+
+
+@router.get("/api/jobs/{job_id}/artifacts.zip")
+def download_artifact_bundle(job_id: str):
+    return _artifact_bundle_response(job_id)
 
 
 @router.get("/api/jobs/{job_id}/artifacts/{artifact_name:path}")

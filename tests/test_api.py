@@ -1,5 +1,7 @@
 import asyncio
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -384,6 +386,7 @@ def test_job_artifact_routes_list_and_serve_files(tmp_path, monkeypatch) -> None
 
     with TestClient(create_app()) as client:
         list_response = client.get("/api/jobs/job-1/artifacts")
+        bundle_response = client.get("/api/jobs/job-1/artifacts.zip")
         manifest_response = client.get("/api/jobs/job-1/manifest")
         events_response = client.get("/api/jobs/job-1/events")
         page_response = client.get("/jobs/job-1")
@@ -397,11 +400,23 @@ def test_job_artifact_routes_list_and_serve_files(tmp_path, monkeypatch) -> None
         "pipeline_manifest.json",
     ]
     assert artifacts[0]["url"] == "/api/jobs/job-1/artifacts/00_media_metadata.json"
+    assert bundle_response.status_code == 200
+    assert bundle_response.headers["content-type"] == "application/zip"
+    assert "job-1-artifacts.zip" in bundle_response.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(bundle_response.content)) as bundle:
+        assert bundle.namelist() == [
+            "00_media_metadata.json",
+            "commands.jsonl",
+            "job-events.jsonl",
+            "pipeline_manifest.json",
+        ]
+        assert json.loads(bundle.read("pipeline_manifest.json")) == {"status": "failed"}
     assert manifest_response.status_code == 200
     assert manifest_response.json() == {"status": "failed"}
     assert events_response.status_code == 200
     assert "job.started" in events_response.text
     assert page_response.status_code == 200
+    assert "/api/jobs/job-1/artifacts.zip" in page_response.text
     assert "Pipeline manifest" in page_response.text
     assert "job-events.jsonl" in page_response.text
     assert "/jobs/job-1/artifacts/pipeline_manifest.json" in page_response.text
