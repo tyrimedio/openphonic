@@ -77,6 +77,25 @@ def _job_root(settings: Settings, job_id: str) -> Path:
     return settings.jobs_dir / job_id
 
 
+def _upload_root(settings: Settings, job_id: str) -> Path:
+    if not job_id or Path(job_id).name != job_id or job_id in {".", ".."}:
+        raise ValueError("Invalid job id.")
+    return settings.uploads_dir / job_id
+
+
+def delete_job_storage(settings: Settings, job_id: str) -> None:
+    roots = [_upload_root(settings, job_id), _job_root(settings, job_id)]
+    existing_roots: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError(f"Job storage root is not a directory: {root}")
+        existing_roots.append(root)
+    for root in existing_roots:
+        shutil.rmtree(root)
+
+
 def list_job_artifacts(settings: Settings, job_id: str) -> list[JobArtifact]:
     root = _job_root(settings, job_id)
     if not root.exists():

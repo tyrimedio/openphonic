@@ -7,6 +7,7 @@ import pytest
 from openphonic.core.settings import Settings
 from openphonic.services.storage import (
     archive_job_attempt,
+    delete_job_storage,
     job_artifact_path,
     job_dir,
     list_job_artifacts,
@@ -56,6 +57,7 @@ def test_list_job_artifacts_returns_relative_file_names(tmp_path) -> None:
         pipeline_config=tmp_path / "config.yml",
         preset_dir=tmp_path / "data" / "presets",
         max_upload_mb=10,
+        retention_days=0,
         public_base_url="http://127.0.0.1:8000",
         hf_token=None,
         whisper_model="small",
@@ -85,6 +87,7 @@ def test_job_artifact_path_rejects_traversal(tmp_path) -> None:
         pipeline_config=tmp_path / "config.yml",
         preset_dir=tmp_path / "data" / "presets",
         max_upload_mb=10,
+        retention_days=0,
         public_base_url="http://127.0.0.1:8000",
         hf_token=None,
         whisper_model="small",
@@ -108,6 +111,7 @@ def test_archive_job_attempt_moves_current_artifacts_but_keeps_previous_attempts
         pipeline_config=tmp_path / "config.yml",
         preset_dir=tmp_path / "data" / "presets",
         max_upload_mb=10,
+        retention_days=0,
         public_base_url="http://127.0.0.1:8000",
         hf_token=None,
         whisper_model="small",
@@ -139,6 +143,7 @@ def test_archive_job_attempt_rolls_back_moved_artifacts_when_later_move_fails(
         pipeline_config=tmp_path / "config.yml",
         preset_dir=tmp_path / "data" / "presets",
         max_upload_mb=10,
+        retention_days=0,
         public_base_url="http://127.0.0.1:8000",
         hf_token=None,
         whisper_model="small",
@@ -169,3 +174,79 @@ def test_archive_job_attempt_rolls_back_moved_artifacts_when_later_move_fails(
     assert (root / "commands.jsonl").read_text(encoding="utf-8") == "commands"
     assert (root / "pipeline_manifest.json").read_text(encoding="utf-8") == "manifest"
     assert not (root / "attempts" / "attempt-new" / "commands.jsonl").exists()
+
+
+def test_delete_job_storage_removes_upload_and_artifact_directories(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "openphonic.sqlite3",
+        pipeline_config=tmp_path / "config.yml",
+        preset_dir=tmp_path / "data" / "presets",
+        max_upload_mb=10,
+        retention_days=0,
+        public_base_url="http://127.0.0.1:8000",
+        hf_token=None,
+        whisper_model="small",
+        whisper_device="auto",
+        pyannote_model="pyannote/speaker-diarization-3.1",
+        deepfilternet_bin="deepFilter",
+    )
+    upload_root = settings.uploads_dir / "job-1"
+    work_root = settings.jobs_dir / "job-1"
+    upload_root.mkdir(parents=True)
+    work_root.mkdir(parents=True)
+    (upload_root / "input.wav").write_bytes(b"input")
+    (work_root / "pipeline_manifest.json").write_text("{}", encoding="utf-8")
+
+    delete_job_storage(settings, "job-1")
+
+    assert not upload_root.exists()
+    assert not work_root.exists()
+
+
+def test_delete_job_storage_rejects_invalid_job_ids(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "openphonic.sqlite3",
+        pipeline_config=tmp_path / "config.yml",
+        preset_dir=tmp_path / "data" / "presets",
+        max_upload_mb=10,
+        retention_days=0,
+        public_base_url="http://127.0.0.1:8000",
+        hf_token=None,
+        whisper_model="small",
+        whisper_device="auto",
+        pyannote_model="pyannote/speaker-diarization-3.1",
+        deepfilternet_bin="deepFilter",
+    )
+
+    with pytest.raises(ValueError, match="Invalid job id"):
+        delete_job_storage(settings, "../job-1")
+
+
+def test_delete_job_storage_validates_roots_before_removing_anything(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "openphonic.sqlite3",
+        pipeline_config=tmp_path / "config.yml",
+        preset_dir=tmp_path / "data" / "presets",
+        max_upload_mb=10,
+        retention_days=0,
+        public_base_url="http://127.0.0.1:8000",
+        hf_token=None,
+        whisper_model="small",
+        whisper_device="auto",
+        pyannote_model="pyannote/speaker-diarization-3.1",
+        deepfilternet_bin="deepFilter",
+    )
+    upload_root = settings.uploads_dir / "job-1"
+    work_root = settings.jobs_dir / "job-1"
+    upload_root.mkdir(parents=True)
+    settings.jobs_dir.mkdir(parents=True)
+    work_root.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a directory"):
+        delete_job_storage(settings, "job-1")
+
+    assert upload_root.exists()
+    assert work_root.exists()

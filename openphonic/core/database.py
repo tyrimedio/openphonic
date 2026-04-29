@@ -44,6 +44,22 @@ class RetryClaim:
     current: JobRecord
 
 
+@dataclass(frozen=True)
+class RetentionClaim:
+    previous: JobRecord
+    current: JobRecord
+
+
+RETENTION_CLAIM_STATUSES = {
+    "succeeded": "retention_cleanup_succeeded",
+    "failed": "retention_cleanup_failed",
+}
+RETENTION_ORIGINAL_STATUSES = {
+    claim_status: original_status
+    for original_status, claim_status in RETENTION_CLAIM_STATUSES.items()
+}
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
@@ -148,6 +164,269 @@ def list_jobs_by_status(db_path: Path, statuses: tuple[str, ...]) -> list[JobRec
             statuses,
         ).fetchall()
     return [JobRecord(**dict(row)) for row in rows]
+
+
+def list_completed_jobs_before(db_path: Path, cutoff: str) -> list[JobRecord]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status IN ('succeeded', 'failed')
+              AND completed_at IS NOT NULL
+              AND completed_at < ?
+            ORDER BY completed_at ASC
+            """,
+            (cutoff,),
+        ).fetchall()
+    return [JobRecord(**dict(row)) for row in rows]
+
+
+def list_retention_cleanup_candidates(
+    db_path: Path,
+    cutoff: str,
+    claim_stale_cutoff: str,
+) -> list[JobRecord]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM jobs
+            WHERE completed_at IS NOT NULL
+              AND (
+                (
+                  status IN ('succeeded', 'failed')
+                  AND completed_at < ?
+                )
+                OR (
+                  status IN ('retention_cleanup_succeeded', 'retention_cleanup_failed')
+                  AND completed_at < ?
+                  AND updated_at < ?
+                )
+              )
+            ORDER BY completed_at ASC
+            """,
+            (cutoff, cutoff, claim_stale_cutoff),
+        ).fetchall()
+    return [JobRecord(**dict(row)) for row in rows]
+
+
+def list_stale_retention_claims_to_restore(
+    db_path: Path,
+    cutoff: str,
+    claim_stale_cutoff: str,
+) -> list[JobRecord]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM jobs
+            WHERE status IN ('retention_cleanup_succeeded', 'retention_cleanup_failed')
+              AND completed_at IS NOT NULL
+              AND completed_at >= ?
+              AND updated_at < ?
+            ORDER BY completed_at ASC
+            """,
+            (cutoff, claim_stale_cutoff),
+        ).fetchall()
+    return [JobRecord(**dict(row)) for row in rows]
+
+
+def restore_stale_retention_claim(
+    db_path: Path,
+    record: JobRecord,
+    cutoff: str,
+    claim_stale_cutoff: str,
+) -> JobRecord | None:
+    if record.status not in RETENTION_ORIGINAL_STATUSES:
+        return None
+
+    now = utc_now()
+    original_status = RETENTION_ORIGINAL_STATUSES[record.status]
+    with connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND status = ?
+              AND updated_at = ?
+              AND completed_at IS NOT NULL
+              AND completed_at >= ?
+              AND updated_at < ?
+            """,
+            (
+                original_status,
+                now,
+                record.id,
+                record.status,
+                record.updated_at,
+                cutoff,
+                claim_stale_cutoff,
+            ),
+        )
+        if cursor.rowcount != 1:
+            return None
+        row = connection.execute(
+            "SELECT * FROM jobs WHERE id = ?",
+            (record.id,),
+        ).fetchone()
+    return JobRecord(**dict(row)) if row is not None else None
+
+
+def delete_stale_retention_claim(
+    db_path: Path,
+    record: JobRecord,
+    cutoff: str,
+    claim_stale_cutoff: str,
+) -> bool:
+    if record.status not in RETENTION_ORIGINAL_STATUSES:
+        return False
+
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM jobs
+            WHERE id = ?
+              AND status = ?
+              AND updated_at = ?
+              AND completed_at IS NOT NULL
+              AND completed_at >= ?
+              AND updated_at < ?
+            """,
+            (
+                record.id,
+                record.status,
+                record.updated_at,
+                cutoff,
+                claim_stale_cutoff,
+            ),
+        )
+        return cursor.rowcount == 1
+
+
+def claim_completed_job_for_retention(
+    db_path: Path,
+    job_id: str,
+    cutoff: str,
+    claim_stale_cutoff: str | None = None,
+) -> RetentionClaim | None:
+    with connect(db_path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if claim_stale_cutoff is None:
+            row = connection.execute(
+                """
+                SELECT * FROM jobs
+                WHERE id = ?
+                  AND status IN ('succeeded', 'failed')
+                  AND completed_at IS NOT NULL
+                  AND completed_at < ?
+                """,
+                (job_id, cutoff),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT * FROM jobs
+                WHERE id = ?
+                  AND completed_at IS NOT NULL
+                  AND (
+                    (
+                      status IN ('succeeded', 'failed')
+                      AND completed_at < ?
+                    )
+                    OR (
+                      status IN ('retention_cleanup_succeeded', 'retention_cleanup_failed')
+                      AND completed_at < ?
+                      AND updated_at < ?
+                    )
+                  )
+                """,
+                (job_id, cutoff, cutoff, claim_stale_cutoff),
+            ).fetchone()
+        if row is None:
+            return None
+
+        record = JobRecord(**dict(row))
+        now = utc_now()
+
+        if record.status in RETENTION_CLAIM_STATUSES:
+            previous = record
+            claim_status = RETENTION_CLAIM_STATUSES[record.status]
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND completed_at IS NOT NULL
+                  AND completed_at < ?
+                """,
+                (claim_status, now, job_id, record.status, cutoff),
+            )
+        else:
+            previous_data = asdict(record)
+            previous_data["status"] = RETENTION_ORIGINAL_STATUSES[record.status]
+            previous = JobRecord(**previous_data)
+            claim_status = record.status
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET updated_at = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND updated_at = ?
+                  AND completed_at IS NOT NULL
+                  AND completed_at < ?
+                  AND updated_at < ?
+                """,
+                (now, job_id, record.status, record.updated_at, cutoff, claim_stale_cutoff),
+            )
+        if cursor.rowcount != 1:
+            return None
+        row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:  # pragma: no cover - impossible after successful update
+            raise KeyError(job_id)
+        current = JobRecord(**dict(row))
+        if current.status != claim_status:  # pragma: no cover - guarded by BEGIN IMMEDIATE
+            return None
+        return RetentionClaim(previous=previous, current=current)
+
+
+def delete_retention_claim(db_path: Path, claim: RetentionClaim) -> bool:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM jobs
+            WHERE id = ?
+              AND status = ?
+              AND updated_at = ?
+            """,
+            (claim.current.id, claim.current.status, claim.current.updated_at),
+        )
+        return cursor.rowcount == 1
+
+
+def restore_retention_claim(db_path: Path, claim: RetentionClaim) -> bool:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND status = ?
+              AND updated_at = ?
+            """,
+            (
+                claim.previous.status,
+                claim.previous.updated_at,
+                claim.current.id,
+                claim.current.status,
+                claim.current.updated_at,
+            ),
+        )
+        return cursor.rowcount == 1
 
 
 def claim_failed_job_for_retry(db_path: Path, job_id: str) -> RetryClaim | None:
