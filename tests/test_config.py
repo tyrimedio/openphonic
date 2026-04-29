@@ -37,20 +37,27 @@ def test_builtin_presets_load_conservative_audio_polish_configs() -> None:
         "transcript-review",
         default_path=DEFAULT_PIPELINE_CONFIG,
     )
+    speaker_diarization = load_pipeline_config_for_preset(
+        "speaker-diarization",
+        default_path=DEFAULT_PIPELINE_CONFIG,
+    )
 
     assert [preset.id for preset in presets] == [
         "podcast-default",
         "speech-cleanup",
         "vocal-isolation",
         "transcript-review",
+        "speaker-diarization",
     ]
     assert DEFAULT_PIPELINE_CONFIG.exists()
     assert presets[1].path.is_relative_to(CONFIG_ROOT)
     assert presets[2].path.is_relative_to(CONFIG_ROOT)
     assert presets[3].path.is_relative_to(CONFIG_ROOT)
+    assert presets[4].path.is_relative_to(CONFIG_ROOT)
     assert presets[1].path.exists()
     assert presets[2].path.exists()
     assert presets[3].path.exists()
+    assert presets[4].path.exists()
     assert speech_cleanup.name == "speech-cleanup"
     assert speech_cleanup.enabled("noise_reduction") is True
     assert speech_cleanup.stage("noise_reduction")["attenuation_db"] == 8
@@ -63,6 +70,10 @@ def test_builtin_presets_load_conservative_audio_polish_configs() -> None:
     assert transcript_review.enabled("transcription") is True
     assert transcript_review.enabled("filler_removal") is True
     assert transcript_review.enabled("diarization") is False
+    assert speaker_diarization.name == "speaker-diarization"
+    assert speaker_diarization.enabled("transcription") is True
+    assert speaker_diarization.enabled("diarization") is True
+    assert speaker_diarization.enabled("filler_removal") is False
 
 
 def test_custom_presets_are_discovered_and_loaded(tmp_path) -> None:
@@ -135,6 +146,7 @@ stages:
         "speech-cleanup",
         "vocal-isolation",
         "transcript-review",
+        "speaker-diarization",
         "custom:daily-show",
     ]
     assert custom.label == "Daily show"
