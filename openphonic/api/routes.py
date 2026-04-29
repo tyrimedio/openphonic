@@ -557,6 +557,21 @@ def _vtt_cue_text(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
+def _speaker_transcript_text(segments: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for segment in segments:
+        text = " ".join(str(segment.get("text") or "").split())
+        if not text:
+            continue
+        speaker = segment.get("speaker")
+        if isinstance(speaker, dict):
+            label = str(speaker.get("label") or speaker.get("speaker") or "Unknown")
+        else:
+            label = "Unknown"
+        lines.append(f"[{segment['start']} - {segment['end']}] {label}: {text}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def _speaker_label_map(corrections: dict[str, Any] | None) -> dict[str, str]:
     if corrections is None:
         return {}
@@ -952,6 +967,9 @@ def transcript_page(request: Request, job_id: str):
             "download_url": _artifact_url(job_id, artifact_name),
             "vtt_url": _artifact_url(job_id, vtt_name) if vtt_name in artifacts else None,
             "speaker_url": speaker_url,
+            "speaker_transcript_url": f"/api/jobs/{job_id}/transcript/speakers.txt"
+            if diarization is not None
+            else None,
             "edit_url": f"/jobs/{job_id}/transcript/edit",
             "corrected_json_url": f"/api/jobs/{job_id}/transcript/corrected.json"
             if corrections is not None
@@ -1417,6 +1435,23 @@ def download_corrected_transcript_vtt(job_id: str):
         _transcript_vtt(corrected),
         media_type="text/vtt",
         headers={"Content-Disposition": 'attachment; filename="transcript_corrected.vtt"'},
+    )
+
+
+@router.get("/api/jobs/{job_id}/transcript/speakers.txt")
+def download_speaker_transcript(job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    transcript, _artifact_name = _load_transcript_artifact(job_id, record.transcript_path)
+    transcript_corrections = _load_transcript_corrections(job_id)
+    diarization, _diarization_name = _load_diarization_artifact(job_id)
+    speaker_corrections = _load_speaker_corrections(job_id)
+    segments = _transcript_segments(transcript, transcript_corrections)
+    _annotate_transcript_speakers(segments, diarization, speaker_corrections)
+    return Response(
+        _speaker_transcript_text(segments),
+        media_type="text/plain",
+        headers={"Content-Disposition": 'attachment; filename="speaker_transcript.txt"'},
     )
 
 

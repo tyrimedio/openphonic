@@ -532,6 +532,25 @@ def test_transcript_page_renders_speaker_labels_from_diarization(
         ),
         encoding="utf-8",
     )
+    (work_dir / "transcript_corrections.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_artifact": "transcript.json",
+                "segments": [
+                    {
+                        "segment_index": 1,
+                        "segment_id": 2,
+                        "start": 1.45,
+                        "end": 2.7,
+                        "original_text": " Thanks for having me",
+                        "text": "Great to be here\n\nthanks",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     update_job(
         db_path,
         "job-1",
@@ -543,12 +562,20 @@ def test_transcript_page_renders_speaker_labels_from_diarization(
 
     with TestClient(create_app()) as client:
         response = client.get("/jobs/job-1/transcript")
+        speaker_transcript_response = client.get("/api/jobs/job-1/transcript/speakers.txt")
 
     assert response.status_code == 200
     assert "Speakers" in response.text
     assert "Host" in response.text
     assert "SPEAKER_01" in response.text
     assert "/jobs/job-1/speakers" in response.text
+    assert "Speaker TXT" in response.text
+    assert speaker_transcript_response.status_code == 200
+    assert speaker_transcript_response.headers["content-type"].startswith("text/plain")
+    assert speaker_transcript_response.text == (
+        "[00:00.000 - 00:01.200] Host: Welcome back\n"
+        "[00:01.450 - 00:02.700] SPEAKER_01: Great to be here thanks\n"
+    )
 
 
 def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) -> None:
