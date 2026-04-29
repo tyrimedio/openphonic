@@ -1,14 +1,16 @@
 from pathlib import Path
 
 from openphonic.core.database import (
+    claim_completed_job_for_retention,
     claim_failed_job_for_retry,
-    claimed_completed_job_before,
     create_job,
+    delete_retention_claim,
     get_job,
     init_db,
     list_completed_jobs_before,
     list_jobs,
     list_jobs_by_status,
+    restore_retention_claim,
     update_job,
 )
 
@@ -112,7 +114,7 @@ def test_completed_jobs_before_returns_only_terminal_expired_jobs(tmp_path) -> N
     assert [job.id for job in expired] == ["old-success", "old-failed"]
 
 
-def test_claimed_completed_job_before_deletes_only_after_context_success(tmp_path) -> None:
+def test_retention_claim_is_short_and_conditional(tmp_path) -> None:
     db_path = tmp_path / "openphonic.sqlite3"
     init_db(db_path)
     create_job(
@@ -130,20 +132,23 @@ def test_claimed_completed_job_before_deletes_only_after_context_success(tmp_pat
 
     stale_cutoff = "2025-12-31T00:00:00+00:00"
     matching_cutoff = "2026-01-05T00:00:00+00:00"
-    with claimed_completed_job_before(db_path, "old-failed", stale_cutoff) as stale_claim:
-        assert stale_claim is None
+    assert claim_completed_job_for_retention(db_path, "old-failed", stale_cutoff) is None
     assert get_job(db_path, "old-failed") is not None
 
-    with claimed_completed_job_before(db_path, "old-failed", matching_cutoff) as claimed:
-        assert claimed is not None
-        assert claimed.id == "old-failed"
-        assert claimed.status == "failed"
-        assert get_job(db_path, "old-failed") is not None
+    claim = claim_completed_job_for_retention(db_path, "old-failed", matching_cutoff)
 
+    assert claim is not None
+    assert claim.previous.id == "old-failed"
+    assert claim.previous.status == "failed"
+    assert claim.current.id == "old-failed"
+    assert claim.current.status == "retention_cleanup_failed"
+    assert get_job(db_path, "old-failed") == claim.current
+
+    assert delete_retention_claim(db_path, claim) is True
     assert get_job(db_path, "old-failed") is None
 
 
-def test_claimed_completed_job_before_rolls_back_on_failure(tmp_path) -> None:
+def test_retention_claim_can_be_restored_on_storage_failure(tmp_path) -> None:
     db_path = tmp_path / "openphonic.sqlite3"
     init_db(db_path)
     create_job(
@@ -159,15 +164,14 @@ def test_claimed_completed_job_before_rolls_back_on_failure(tmp_path) -> None:
         completed_at="2026-01-01T00:00:00+00:00",
     )
 
-    try:
-        with claimed_completed_job_before(
-            db_path,
-            "old-failed",
-            "2026-01-05T00:00:00+00:00",
-        ) as claimed:
-            assert claimed is not None
-            raise RuntimeError("storage deletion failed")
-    except RuntimeError:
-        pass
+    claim = claim_completed_job_for_retention(
+        db_path,
+        "old-failed",
+        "2026-01-05T00:00:00+00:00",
+    )
+    assert claim is not None
+    assert get_job(db_path, "old-failed") == claim.current
 
-    assert get_job(db_path, "old-failed") is not None
+    assert restore_retention_claim(db_path, claim) is True
+
+    assert get_job(db_path, "old-failed") == claim.previous

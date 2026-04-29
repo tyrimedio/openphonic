@@ -102,6 +102,49 @@ def test_cleanup_expired_jobs_preserves_row_when_storage_cleanup_fails(
     assert (settings.jobs_dir / "old-job").exists()
 
 
+def test_cleanup_expired_jobs_does_not_hold_write_lock_during_storage_cleanup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch, retention_days=7)
+    create_completed_job(db_path, "old-job", completed_at="2026-04-01T00:00:00+00:00")
+    create_job(
+        db_path,
+        job_id="active-job",
+        original_filename="active.wav",
+        input_path=Path("/tmp/active.wav"),
+    )
+
+    def delete_storage_while_writing(settings, job_id: str) -> None:
+        assert job_id == "old-job"
+        claimed = get_job(db_path, "old-job")
+        assert claimed is not None
+        assert claimed.status == "retention_cleanup_succeeded"
+        update_job(
+            db_path,
+            "active-job",
+            current_stage="storage_cleanup_overlap",
+            progress=7,
+        )
+        from openphonic.services.storage import delete_job_storage
+
+        delete_job_storage(settings, job_id)
+
+    monkeypatch.setattr(
+        "openphonic.services.retention.delete_job_storage",
+        delete_storage_while_writing,
+    )
+
+    result = cleanup_expired_jobs(now=datetime(2026, 4, 28, tzinfo=UTC))
+
+    active = get_job(db_path, "active-job")
+    assert active is not None
+    assert result.deleted_job_ids == ["old-job"]
+    assert result.failed_job_ids == {}
+    assert active.current_stage == "storage_cleanup_overlap"
+    assert active.progress == 7
+
+
 def test_cleanup_expired_jobs_skips_rows_that_changed_after_snapshot(
     tmp_path,
     monkeypatch,

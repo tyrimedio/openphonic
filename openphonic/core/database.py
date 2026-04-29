@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,6 +42,18 @@ class JobRecord:
 class RetryClaim:
     previous: JobRecord
     current: JobRecord
+
+
+@dataclass(frozen=True)
+class RetentionClaim:
+    previous: JobRecord
+    current: JobRecord
+
+
+RETENTION_CLAIM_STATUSES = {
+    "succeeded": "retention_cleanup_succeeded",
+    "failed": "retention_cleanup_failed",
+}
 
 
 SCHEMA = """
@@ -167,14 +177,12 @@ def list_completed_jobs_before(db_path: Path, cutoff: str) -> list[JobRecord]:
     return [JobRecord(**dict(row)) for row in rows]
 
 
-@contextmanager
-def claimed_completed_job_before(
+def claim_completed_job_for_retention(
     db_path: Path,
     job_id: str,
     cutoff: str,
-) -> Iterator[JobRecord | None]:
-    connection = connect(db_path)
-    try:
+) -> RetentionClaim | None:
+    with connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """
@@ -187,29 +195,65 @@ def claimed_completed_job_before(
             (job_id, cutoff),
         ).fetchone()
         if row is None:
-            connection.rollback()
-            yield None
-            return
-        record = JobRecord(**dict(row))
-        yield record
+            return None
+        previous = JobRecord(**dict(row))
+        claim_status = RETENTION_CLAIM_STATUSES[previous.status]
+        now = utc_now()
+        connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND status = ?
+              AND completed_at IS NOT NULL
+              AND completed_at < ?
+            """,
+            (claim_status, now, job_id, previous.status, cutoff),
+        )
+        row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:  # pragma: no cover - impossible after successful update
+            raise KeyError(job_id)
+        current = JobRecord(**dict(row))
+        if current.status != claim_status:  # pragma: no cover - guarded by BEGIN IMMEDIATE
+            return None
+        return RetentionClaim(previous=previous, current=current)
+
+
+def delete_retention_claim(db_path: Path, claim: RetentionClaim) -> bool:
+    with connect(db_path) as connection:
         cursor = connection.execute(
             """
             DELETE FROM jobs
             WHERE id = ?
-              AND status IN ('succeeded', 'failed')
-              AND completed_at IS NOT NULL
-              AND completed_at < ?
+              AND status = ?
+              AND updated_at = ?
             """,
-            (job_id, cutoff),
+            (claim.current.id, claim.current.status, claim.current.updated_at),
         )
-        if cursor.rowcount != 1:  # pragma: no cover - guarded by BEGIN IMMEDIATE
-            raise RuntimeError(f"Failed to delete claimed expired job {job_id}")
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+        return cursor.rowcount == 1
+
+
+def restore_retention_claim(db_path: Path, claim: RetentionClaim) -> bool:
+    with connect(db_path) as connection:
+        cursor = connection.execute(
+            """
+            UPDATE jobs
+            SET status = ?,
+                updated_at = ?
+            WHERE id = ?
+              AND status = ?
+              AND updated_at = ?
+            """,
+            (
+                claim.previous.status,
+                claim.previous.updated_at,
+                claim.current.id,
+                claim.current.status,
+                claim.current.updated_at,
+            ),
+        )
+        return cursor.rowcount == 1
 
 
 def claim_failed_job_for_retry(db_path: Path, job_id: str) -> RetryClaim | None:
