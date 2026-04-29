@@ -86,6 +86,12 @@ BUILTIN_PRESETS = (
         description="Podcast default plus optional Demucs vocal isolation for mixed audio.",
         path=CONFIG_ROOT / "presets" / "vocal-isolation.yml",
     ),
+    PipelinePreset(
+        id="transcript-review",
+        label="Transcript review",
+        description="Podcast default plus faster-whisper transcription and cut suggestions.",
+        path=CONFIG_ROOT / "presets" / "transcript-review.yml",
+    ),
 )
 
 

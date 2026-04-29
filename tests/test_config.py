@@ -33,17 +33,24 @@ def test_builtin_presets_load_conservative_audio_polish_configs() -> None:
         "vocal-isolation",
         default_path=DEFAULT_PIPELINE_CONFIG,
     )
+    transcript_review = load_pipeline_config_for_preset(
+        "transcript-review",
+        default_path=DEFAULT_PIPELINE_CONFIG,
+    )
 
     assert [preset.id for preset in presets] == [
         "podcast-default",
         "speech-cleanup",
         "vocal-isolation",
+        "transcript-review",
     ]
     assert DEFAULT_PIPELINE_CONFIG.exists()
     assert presets[1].path.is_relative_to(CONFIG_ROOT)
     assert presets[2].path.is_relative_to(CONFIG_ROOT)
+    assert presets[3].path.is_relative_to(CONFIG_ROOT)
     assert presets[1].path.exists()
     assert presets[2].path.exists()
+    assert presets[3].path.exists()
     assert speech_cleanup.name == "speech-cleanup"
     assert speech_cleanup.enabled("noise_reduction") is True
     assert speech_cleanup.stage("noise_reduction")["attenuation_db"] == 8
@@ -52,6 +59,10 @@ def test_builtin_presets_load_conservative_audio_polish_configs() -> None:
     assert vocal_isolation.enabled("music_separation") is True
     assert vocal_isolation.stage("music_separation")["stem"] == "vocals"
     assert vocal_isolation.enabled("noise_reduction") is False
+    assert transcript_review.name == "transcript-review"
+    assert transcript_review.enabled("transcription") is True
+    assert transcript_review.enabled("filler_removal") is True
+    assert transcript_review.enabled("diarization") is False
 
 
 def test_custom_presets_are_discovered_and_loaded(tmp_path) -> None:
@@ -123,6 +134,7 @@ stages:
         "podcast-default",
         "speech-cleanup",
         "vocal-isolation",
+        "transcript-review",
         "custom:daily-show",
     ]
     assert custom.label == "Daily show"
