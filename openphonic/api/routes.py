@@ -7,7 +7,7 @@ from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from openphonic.core.database import create_job, init_db
@@ -159,6 +159,17 @@ def _format_probability(value: Any) -> str:
         return f"{float(value) * 100:.1f}%"
     except (TypeError, ValueError):
         return "-"
+
+
+def _vtt_timestamp(value: Any) -> str:
+    seconds = _numeric_seconds(value)
+    if seconds is None or seconds < 0:
+        raise ValueError("Transcript segment timestamps must be finite non-negative numbers.")
+    total_ms = int(round(seconds * 1000))
+    hours, total_ms = divmod(total_ms, 3_600_000)
+    minutes, total_ms = divmod(total_ms, 60_000)
+    seconds_part, milliseconds = divmod(total_ms, 1000)
+    return f"{hours:02}:{minutes:02}:{seconds_part:02}.{milliseconds:03}"
 
 
 def _job_relative_artifact_name(job_id: str, path: Path) -> str | None:
@@ -507,6 +518,39 @@ def _build_transcript_corrections(
         "source_artifact": artifact_name,
         "segments": corrections,
     }
+
+
+def _corrected_transcript(
+    transcript: dict[str, Any],
+    corrections: dict[str, Any] | None,
+) -> dict[str, Any]:
+    corrected = json.loads(json.dumps(transcript))
+    segments = corrected.get("segments")
+    if not isinstance(segments, list):
+        return corrected
+
+    for segment_index, text in _correction_text_by_index(corrections).items():
+        if segment_index < 0 or segment_index >= len(segments):
+            continue
+        segment = segments[segment_index]
+        if isinstance(segment, dict):
+            segment["text"] = text
+    return corrected
+
+
+def _transcript_vtt(transcript: dict[str, Any]) -> str:
+    lines = ["WEBVTT", ""]
+    for index, segment in enumerate(transcript.get("segments") or [], start=1):
+        if not isinstance(segment, dict):
+            continue
+        try:
+            timing = (
+                f"{_vtt_timestamp(segment.get('start'))} --> {_vtt_timestamp(segment.get('end'))}"
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        lines.extend([str(index), timing, str(segment.get("text") or "").strip(), ""])
+    return "\n".join(lines)
 
 
 def _speaker_label_map(corrections: dict[str, Any] | None) -> dict[str, str]:
@@ -905,6 +949,12 @@ def transcript_page(request: Request, job_id: str):
             "vtt_url": _artifact_url(job_id, vtt_name) if vtt_name in artifacts else None,
             "speaker_url": speaker_url,
             "edit_url": f"/jobs/{job_id}/transcript/edit",
+            "corrected_json_url": f"/api/jobs/{job_id}/transcript/corrected.json"
+            if corrections is not None
+            else None,
+            "corrected_vtt_url": f"/api/jobs/{job_id}/transcript/corrected.vtt"
+            if corrections is not None
+            else None,
             "corrections_url": _artifact_url(job_id, TRANSCRIPT_CORRECTIONS_ARTIFACT)
             if corrections is not None
             else None,
@@ -1338,6 +1388,32 @@ def download_transcript(job_id: str):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Transcript file missing.")
     return FileResponse(path, filename=path.name)
+
+
+@router.get("/api/jobs/{job_id}/transcript/corrected.json")
+def download_corrected_transcript_json(job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    transcript, _artifact_name = _load_transcript_artifact(job_id, record.transcript_path)
+    corrected = _corrected_transcript(transcript, _load_transcript_corrections(job_id))
+    return Response(
+        json.dumps(corrected, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="transcript_corrected.json"'},
+    )
+
+
+@router.get("/api/jobs/{job_id}/transcript/corrected.vtt")
+def download_corrected_transcript_vtt(job_id: str):
+    _ensure_ready()
+    record = _require_job(job_id)
+    transcript, _artifact_name = _load_transcript_artifact(job_id, record.transcript_path)
+    corrected = _corrected_transcript(transcript, _load_transcript_corrections(job_id))
+    return Response(
+        _transcript_vtt(corrected),
+        media_type="text/vtt",
+        headers={"Content-Disposition": 'attachment; filename="transcript_corrected.vtt"'},
+    )
 
 
 @router.get("/api/jobs/{job_id}/artifacts")
