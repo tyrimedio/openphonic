@@ -1145,6 +1145,17 @@ async def create_job_form(
 @router.post("/api/jobs/{job_id}/retry")
 def retry_job_api(background_tasks: BackgroundTasks, job_id: str) -> dict[str, str]:
     _ensure_ready()
+    record = fetch_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if record.status != "failed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only failed jobs can be retried. Current status: {record.status}.",
+        )
+    job_config = record.to_dict().get("config", {})
+    preset = job_config.get("preset") if isinstance(job_config, dict) else None
+    _preflight_preset_or_400(preset)
     try:
         retry_failed_job(job_id)
     except KeyError as exc:
@@ -1159,6 +1170,36 @@ def retry_job_api(background_tasks: BackgroundTasks, job_id: str) -> dict[str, s
 def retry_job_form(background_tasks: BackgroundTasks, job_id: str):
     payload = retry_job_api(background_tasks, job_id)
     return RedirectResponse(f"/jobs/{payload['id']}", status_code=303)
+
+
+def _preflight_preset_or_400(preset: str | None) -> None:
+    settings = get_settings()
+    label = "Podcast default"
+    try:
+        if preset:
+            preset_info = preset_by_id(
+                preset,
+                default_path=settings.pipeline_config,
+                preset_dir=settings.preset_dir,
+            )
+            label = preset_info.label
+            pipeline_config = PipelineConfig.from_path(preset_info.path)
+        else:
+            pipeline_config = PipelineConfig.from_path(settings.pipeline_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid pipeline preset: {exc}") from exc
+
+    preflight_issues = pipeline_preflight_issues(pipeline_config, settings)
+    if preflight_issues:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Preset '{label}' cannot run on this host. "
+                f"{format_preflight_issues(preflight_issues)}"
+            ),
+        )
 
 
 async def _create_job(
@@ -1179,19 +1220,7 @@ async def _create_job(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    try:
-        pipeline_config = PipelineConfig.from_path(preset_info.path)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid pipeline preset: {exc}") from exc
-    preflight_issues = pipeline_preflight_issues(pipeline_config, settings)
-    if preflight_issues:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Preset '{preset_info.label}' cannot run on this host. "
-                f"{format_preflight_issues(preflight_issues)}"
-            ),
-        )
+    _preflight_preset_or_400(preset_info.id)
 
     job_id, destination = reserve_upload(file.filename)
     try:
