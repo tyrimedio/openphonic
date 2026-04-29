@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import json
 import math
-import tempfile
 import zipfile
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
-from starlette.background import BackgroundTask
 
 from openphonic.core.database import create_job, init_db
 from openphonic.core.settings import get_settings
@@ -84,6 +88,25 @@ CUT_REVIEW_FORM_FIELDS_PER_SUGGESTION = 3
 CUT_REVIEW_FORM_BYTES_PER_SUGGESTION = 256
 MAX_TRANSCRIPT_CORRECTION_FORM_BYTES = MAX_CORRECTION_FORM_BYTES
 MAX_TRANSCRIPT_CORRECTION_FIELDS = MAX_CORRECTION_FIELDS
+ARTIFACT_BUNDLE_CHUNK_BYTES = 1024 * 1024
+
+
+class _ZipStreamBuffer:
+    def __init__(self) -> None:
+        self._chunks: list[bytes] = []
+
+    def write(self, data: bytes) -> int:
+        if data:
+            self._chunks.append(bytes(data))
+        return len(data)
+
+    def flush(self) -> None:
+        return None
+
+    def drain(self) -> list[bytes]:
+        chunks = self._chunks
+        self._chunks = []
+        return chunks
 
 
 def _ensure_ready() -> None:
@@ -132,31 +155,46 @@ def _artifact_response(job_id: str, artifact_name: str, media_type: str | None =
 def _artifact_bundle_response(job_id: str):
     _ensure_ready()
     _require_job(job_id)
+    settings = get_settings()
     try:
-        artifacts = list_job_artifacts(get_settings(), job_id)
+        artifacts = list_job_artifacts(settings, job_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not artifacts:
         raise HTTPException(status_code=404, detail="No artifacts available.")
 
-    bundle = tempfile.NamedTemporaryFile(prefix=f"{job_id}-artifacts-", suffix=".zip", delete=False)
-    bundle_path = Path(bundle.name)
-    bundle.close()
     try:
-        with zipfile.ZipFile(bundle_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for artifact in artifacts:
-                path = job_artifact_path(get_settings(), job_id, artifact.name)
-                archive.write(path, arcname=artifact.name)
-    except Exception:
-        bundle_path.unlink(missing_ok=True)
-        raise
+        artifact_paths = [
+            (artifact.name, job_artifact_path(settings, job_id, artifact.name))
+            for artifact in artifacts
+        ]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found.") from exc
 
-    return FileResponse(
-        bundle_path,
-        filename=f"{job_id}-artifacts.zip",
+    return StreamingResponse(
+        _stream_artifact_bundle(artifact_paths),
         media_type="application/zip",
-        background=BackgroundTask(lambda: bundle_path.unlink(missing_ok=True)),
+        headers={"Content-Disposition": f'attachment; filename="{job_id}-artifacts.zip"'},
     )
+
+
+def _stream_artifact_bundle(artifact_paths: list[tuple[str, Path]]):
+    buffer = _ZipStreamBuffer()
+    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for artifact_name, path in artifact_paths:
+            info = zipfile.ZipInfo(artifact_name)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            with (
+                path.open("rb") as source,
+                archive.open(info, mode="w", force_zip64=True) as target,
+            ):
+                while chunk := source.read(ARTIFACT_BUNDLE_CHUNK_BYTES):
+                    target.write(chunk)
+                    yield from buffer.drain()
+            yield from buffer.drain()
+    yield from buffer.drain()
 
 
 def _format_bytes(size_bytes: int) -> str:
