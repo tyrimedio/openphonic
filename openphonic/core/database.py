@@ -198,12 +198,13 @@ def list_retention_cleanup_candidates(
                 )
                 OR (
                   status IN ('retention_cleanup_succeeded', 'retention_cleanup_failed')
+                  AND completed_at < ?
                   AND updated_at < ?
                 )
               )
             ORDER BY completed_at ASC
             """,
-            (cutoff, claim_stale_cutoff),
+            (cutoff, cutoff, claim_stale_cutoff),
         ).fetchall()
     return [JobRecord(**dict(row)) for row in rows]
 
@@ -240,11 +241,12 @@ def claim_completed_job_for_retention(
                     )
                     OR (
                       status IN ('retention_cleanup_succeeded', 'retention_cleanup_failed')
+                      AND completed_at < ?
                       AND updated_at < ?
                     )
                   )
                 """,
-                (job_id, cutoff, claim_stale_cutoff),
+                (job_id, cutoff, cutoff, claim_stale_cutoff),
             ).fetchone()
         if row is None:
             return None
@@ -280,9 +282,10 @@ def claim_completed_job_for_retention(
                   AND status = ?
                   AND updated_at = ?
                   AND completed_at IS NOT NULL
+                  AND completed_at < ?
                   AND updated_at < ?
                 """,
-                (now, job_id, record.status, record.updated_at, claim_stale_cutoff),
+                (now, job_id, record.status, record.updated_at, cutoff, claim_stale_cutoff),
             )
         if cursor.rowcount != 1:
             return None

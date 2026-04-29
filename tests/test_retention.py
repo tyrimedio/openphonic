@@ -181,6 +181,34 @@ def test_cleanup_expired_jobs_recovers_stale_retention_claims(
     assert not (settings.jobs_dir / "old-job").exists()
 
 
+def test_cleanup_expired_jobs_keeps_stale_claims_unexpired_by_current_policy(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch, retention_days=30)
+    create_completed_job(db_path, "old-job", completed_at="2026-04-18T00:00:00+00:00")
+    claim = claim_completed_job_for_retention(
+        db_path,
+        "old-job",
+        "2026-04-21T00:00:00+00:00",
+    )
+    assert claim is not None
+    with connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ?",
+            ("2026-04-27T23:00:00+00:00", "old-job"),
+        )
+
+    result = cleanup_expired_jobs(now=datetime(2026, 4, 28, tzinfo=UTC))
+
+    settings = get_settings()
+    assert result.deleted_job_ids == []
+    assert result.failed_job_ids == {}
+    assert get_job(db_path, "old-job") is not None
+    assert (settings.uploads_dir / "old-job").exists()
+    assert (settings.jobs_dir / "old-job").exists()
+
+
 def test_cleanup_expired_jobs_skips_rows_that_changed_after_snapshot(
     tmp_path,
     monkeypatch,

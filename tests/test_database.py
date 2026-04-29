@@ -158,6 +158,13 @@ def test_retention_cleanup_candidates_include_only_stale_claims(tmp_path) -> Non
     )
     assert [job.id for job in candidates] == ["old-failed"]
 
+    candidates = list_retention_cleanup_candidates(
+        db_path,
+        "2025-12-31T00:00:00+00:00",
+        "2026-01-02T00:00:00+00:00",
+    )
+    assert candidates == []
+
 
 def test_retention_claim_is_short_and_conditional(tmp_path) -> None:
     db_path = tmp_path / "openphonic.sqlite3"
@@ -259,6 +266,16 @@ def test_stale_retention_claim_can_be_reclaimed(tmp_path) -> None:
             "UPDATE jobs SET updated_at = ? WHERE id = ?",
             ("2026-01-01T00:00:00+00:00", "old-failed"),
         )
+
+    assert (
+        claim_completed_job_for_retention(
+            db_path,
+            "old-failed",
+            "2025-12-31T00:00:00+00:00",
+            "2026-01-02T00:00:00+00:00",
+        )
+        is None
+    )
 
     reclaimed = claim_completed_job_for_retention(
         db_path,
