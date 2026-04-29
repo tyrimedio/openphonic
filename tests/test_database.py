@@ -2,8 +2,9 @@ from pathlib import Path
 
 from openphonic.core.database import (
     claim_failed_job_for_retry,
+    claimed_completed_job_before,
     create_job,
-    delete_completed_job_before,
+    get_job,
     init_db,
     list_completed_jobs_before,
     list_jobs,
@@ -111,7 +112,7 @@ def test_completed_jobs_before_returns_only_terminal_expired_jobs(tmp_path) -> N
     assert [job.id for job in expired] == ["old-success", "old-failed"]
 
 
-def test_delete_completed_job_before_is_conditional(tmp_path) -> None:
+def test_claimed_completed_job_before_deletes_only_after_context_success(tmp_path) -> None:
     db_path = tmp_path / "openphonic.sqlite3"
     init_db(db_path)
     create_job(
@@ -129,12 +130,44 @@ def test_delete_completed_job_before_is_conditional(tmp_path) -> None:
 
     stale_cutoff = "2025-12-31T00:00:00+00:00"
     matching_cutoff = "2026-01-05T00:00:00+00:00"
-    assert delete_completed_job_before(db_path, "old-failed", stale_cutoff) is None
+    with claimed_completed_job_before(db_path, "old-failed", stale_cutoff) as stale_claim:
+        assert stale_claim is None
+    assert get_job(db_path, "old-failed") is not None
 
-    deleted = delete_completed_job_before(db_path, "old-failed", matching_cutoff)
-    second_delete = delete_completed_job_before(db_path, "old-failed", matching_cutoff)
+    with claimed_completed_job_before(db_path, "old-failed", matching_cutoff) as claimed:
+        assert claimed is not None
+        assert claimed.id == "old-failed"
+        assert claimed.status == "failed"
+        assert get_job(db_path, "old-failed") is not None
 
-    assert deleted is not None
-    assert deleted.id == "old-failed"
-    assert deleted.status == "failed"
-    assert second_delete is None
+    assert get_job(db_path, "old-failed") is None
+
+
+def test_claimed_completed_job_before_rolls_back_on_failure(tmp_path) -> None:
+    db_path = tmp_path / "openphonic.sqlite3"
+    init_db(db_path)
+    create_job(
+        db_path,
+        job_id="old-failed",
+        original_filename="input.wav",
+        input_path=Path("/tmp/input.wav"),
+    )
+    update_job(
+        db_path,
+        "old-failed",
+        status="failed",
+        completed_at="2026-01-01T00:00:00+00:00",
+    )
+
+    try:
+        with claimed_completed_job_before(
+            db_path,
+            "old-failed",
+            "2026-01-05T00:00:00+00:00",
+        ) as claimed:
+            assert claimed is not None
+            raise RuntimeError("storage deletion failed")
+    except RuntimeError:
+        pass
+
+    assert get_job(db_path, "old-failed") is not None

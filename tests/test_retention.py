@@ -76,6 +76,32 @@ def test_cleanup_expired_jobs_is_disabled_when_retention_is_zero(tmp_path, monke
     assert (get_settings().jobs_dir / "old-job").exists()
 
 
+def test_cleanup_expired_jobs_preserves_row_when_storage_cleanup_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch, retention_days=7)
+    create_completed_job(db_path, "old-job", completed_at="2026-04-01T00:00:00+00:00")
+
+    def fail_delete_storage(settings, job_id: str) -> None:
+        _ = settings, job_id
+        raise OSError("storage is busy")
+
+    monkeypatch.setattr(
+        "openphonic.services.retention.delete_job_storage",
+        fail_delete_storage,
+    )
+
+    result = cleanup_expired_jobs(now=datetime(2026, 4, 28, tzinfo=UTC))
+
+    settings = get_settings()
+    assert result.deleted_job_ids == []
+    assert result.failed_job_ids == {"old-job": "storage is busy"}
+    assert get_job(db_path, "old-job") is not None
+    assert (settings.uploads_dir / "old-job").exists()
+    assert (settings.jobs_dir / "old-job").exists()
+
+
 def test_cleanup_expired_jobs_skips_rows_that_changed_after_snapshot(
     tmp_path,
     monkeypatch,

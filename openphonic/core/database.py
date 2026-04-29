@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -165,8 +167,14 @@ def list_completed_jobs_before(db_path: Path, cutoff: str) -> list[JobRecord]:
     return [JobRecord(**dict(row)) for row in rows]
 
 
-def delete_completed_job_before(db_path: Path, job_id: str, cutoff: str) -> JobRecord | None:
-    with connect(db_path) as connection:
+@contextmanager
+def claimed_completed_job_before(
+    db_path: Path,
+    job_id: str,
+    cutoff: str,
+) -> Iterator[JobRecord | None]:
+    connection = connect(db_path)
+    try:
         connection.execute("BEGIN IMMEDIATE")
         row = connection.execute(
             """
@@ -179,8 +187,11 @@ def delete_completed_job_before(db_path: Path, job_id: str, cutoff: str) -> JobR
             (job_id, cutoff),
         ).fetchone()
         if row is None:
-            return None
+            connection.rollback()
+            yield None
+            return
         record = JobRecord(**dict(row))
+        yield record
         cursor = connection.execute(
             """
             DELETE FROM jobs
@@ -192,8 +203,13 @@ def delete_completed_job_before(db_path: Path, job_id: str, cutoff: str) -> JobR
             (job_id, cutoff),
         )
         if cursor.rowcount != 1:  # pragma: no cover - guarded by BEGIN IMMEDIATE
-            return None
-        return record
+            raise RuntimeError(f"Failed to delete claimed expired job {job_id}")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def claim_failed_job_for_retry(db_path: Path, job_id: str) -> RetryClaim | None:
