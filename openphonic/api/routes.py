@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import parse_qs, quote
@@ -269,6 +270,10 @@ def _load_speaker_corrections(job_id: str) -> dict[str, Any] | None:
     return _load_corrections_artifact(job_id, SPEAKER_CORRECTIONS_ARTIFACT, "Speaker")
 
 
+def _optional_diarization_artifact(job_id: str) -> dict[str, Any] | None:
+    return _load_optional_json_artifact(job_id, "diarization.json", "Diarization")
+
+
 def _load_json_artifact(job_id: str, artifact_name: str, label: str) -> dict[str, Any]:
     try:
         path = job_artifact_path(get_settings(), job_id, artifact_name)
@@ -412,6 +417,65 @@ def _transcript_segments(
             }
         )
     return rendered_segments
+
+
+def _numeric_seconds(value: Any) -> float | None:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(seconds):
+        return None
+    return seconds
+
+
+def _annotate_transcript_speakers(
+    segments: list[dict[str, Any]],
+    diarization: dict[str, Any] | None,
+    corrections: dict[str, Any] | None,
+) -> int | None:
+    if diarization is None:
+        return None
+
+    labels = _speaker_label_map(corrections)
+    turns: list[dict[str, Any]] = []
+    for turn in diarization.get("segments") or []:
+        if not isinstance(turn, dict):
+            continue
+        start = _numeric_seconds(turn.get("start"))
+        end = _numeric_seconds(turn.get("end"))
+        speaker = str(turn.get("speaker") or "")
+        if start is None or end is None or end <= start or not speaker:
+            continue
+        turns.append({"start": start, "end": end, "speaker": speaker})
+
+    if not turns:
+        return 0
+
+    speaker_count = len({turn["speaker"] for turn in turns})
+    for segment in segments:
+        start = _numeric_seconds(segment.get("start_seconds"))
+        end = _numeric_seconds(segment.get("end_seconds"))
+        if start is None or end is None or end <= start:
+            continue
+
+        overlaps: dict[str, float] = {}
+        for turn in turns:
+            overlap = min(end, turn["end"]) - max(start, turn["start"])
+            if overlap <= 0:
+                continue
+            speaker = turn["speaker"]
+            overlaps[speaker] = overlaps.get(speaker, 0.0) + overlap
+
+        if not overlaps:
+            continue
+        speaker = max(overlaps, key=overlaps.get)
+        segment["speaker"] = {
+            "speaker": speaker,
+            "label": labels.get(speaker, speaker),
+            "overlap_seconds": overlaps[speaker],
+        }
+    return speaker_count
 
 
 def _build_transcript_corrections(
@@ -820,9 +884,13 @@ def transcript_page(request: Request, job_id: str):
     transcript, artifact_name = _load_transcript_artifact(job_id, record.transcript_path)
     corrections = _load_transcript_corrections(job_id)
     segments = _transcript_segments(transcript, corrections)
+    diarization = _optional_diarization_artifact(job_id)
+    speaker_corrections = _load_speaker_corrections(job_id) if diarization is not None else None
+    speaker_count = _annotate_transcript_speakers(segments, diarization, speaker_corrections)
     word_count = sum(len(segment["words"]) for segment in segments)
     vtt_name = "transcript.vtt"
     artifacts = {artifact.name for artifact in list_job_artifacts(get_settings(), job_id)}
+    speaker_url = f"/jobs/{job_id}/speakers" if diarization is not None else None
     return templates.TemplateResponse(
         request,
         "transcript.html",
@@ -835,11 +903,13 @@ def transcript_page(request: Request, job_id: str):
             "artifact_name": artifact_name,
             "download_url": _artifact_url(job_id, artifact_name),
             "vtt_url": _artifact_url(job_id, vtt_name) if vtt_name in artifacts else None,
+            "speaker_url": speaker_url,
             "edit_url": f"/jobs/{job_id}/transcript/edit",
             "corrections_url": _artifact_url(job_id, TRANSCRIPT_CORRECTIONS_ARTIFACT)
             if corrections is not None
             else None,
             "correction_count": sum(1 for segment in segments if segment["is_corrected"]),
+            "speaker_count": speaker_count,
             "language_probability": _format_probability(transcript.get("language_probability")),
             "duration": _format_seconds(transcript.get("duration")),
         },
