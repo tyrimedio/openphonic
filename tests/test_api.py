@@ -599,7 +599,7 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
             "/jobs/job-1/transcript/corrections",
             data={
                 "corrections_version": "missing",
-                "segment_0_text": "Corrected intro",
+                "segment_0_text": "Corrected intro\n\nwith context",
                 "segment_1_text": " Second segment",
             },
             follow_redirects=False,
@@ -627,7 +627,7 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
                 "start": 0.0,
                 "end": 1.2,
                 "original_text": " Original intro",
-                "text": "Corrected intro",
+                "text": "Corrected intro\n\nwith context",
             }
         ],
     }
@@ -641,12 +641,15 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
     assert artifact_response.status_code == 200
     assert corrected_json_response.status_code == 200
     assert corrected_json_response.headers["content-type"] == "application/json"
-    assert corrected_json_response.json()["segments"][0]["text"] == "Corrected intro"
+    assert (
+        corrected_json_response.json()["segments"][0]["text"] == "Corrected intro\n\nwith context"
+    )
     assert corrected_json_response.json()["segments"][1]["text"] == " Second segment"
     assert corrected_vtt_response.status_code == 200
     assert corrected_vtt_response.headers["content-type"].startswith("text/vtt")
     assert "WEBVTT" in corrected_vtt_response.text
-    assert "Corrected intro" in corrected_vtt_response.text
+    assert "Corrected intro with context" in corrected_vtt_response.text
+    assert "Corrected intro\n\nwith context" not in corrected_vtt_response.text
     assert "Second segment" in corrected_vtt_response.text
 
 

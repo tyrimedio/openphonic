@@ -549,8 +549,12 @@ def _transcript_vtt(transcript: dict[str, Any]) -> str:
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        lines.extend([str(index), timing, str(segment.get("text") or "").strip(), ""])
+        lines.extend([str(index), timing, _vtt_cue_text(segment.get("text")), ""])
     return "\n".join(lines)
+
+
+def _vtt_cue_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
 
 
 def _speaker_label_map(corrections: dict[str, Any] | None) -> dict[str, str]:
