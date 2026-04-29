@@ -54,6 +54,10 @@ RETENTION_CLAIM_STATUSES = {
     "succeeded": "retention_cleanup_succeeded",
     "failed": "retention_cleanup_failed",
 }
+RETENTION_ORIGINAL_STATUSES = {
+    claim_status: original_status
+    for original_status, claim_status in RETENTION_CLAIM_STATUSES.items()
+}
 
 
 SCHEMA = """
@@ -177,40 +181,111 @@ def list_completed_jobs_before(db_path: Path, cutoff: str) -> list[JobRecord]:
     return [JobRecord(**dict(row)) for row in rows]
 
 
+def list_retention_cleanup_candidates(
+    db_path: Path,
+    cutoff: str,
+    claim_stale_cutoff: str,
+) -> list[JobRecord]:
+    with connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM jobs
+            WHERE completed_at IS NOT NULL
+              AND (
+                (
+                  status IN ('succeeded', 'failed')
+                  AND completed_at < ?
+                )
+                OR (
+                  status IN ('retention_cleanup_succeeded', 'retention_cleanup_failed')
+                  AND updated_at < ?
+                )
+              )
+            ORDER BY completed_at ASC
+            """,
+            (cutoff, claim_stale_cutoff),
+        ).fetchall()
+    return [JobRecord(**dict(row)) for row in rows]
+
+
 def claim_completed_job_for_retention(
     db_path: Path,
     job_id: str,
     cutoff: str,
+    claim_stale_cutoff: str | None = None,
 ) -> RetentionClaim | None:
     with connect(db_path) as connection:
         connection.execute("BEGIN IMMEDIATE")
-        row = connection.execute(
-            """
-            SELECT * FROM jobs
-            WHERE id = ?
-              AND status IN ('succeeded', 'failed')
-              AND completed_at IS NOT NULL
-              AND completed_at < ?
-            """,
-            (job_id, cutoff),
-        ).fetchone()
+        if claim_stale_cutoff is None:
+            row = connection.execute(
+                """
+                SELECT * FROM jobs
+                WHERE id = ?
+                  AND status IN ('succeeded', 'failed')
+                  AND completed_at IS NOT NULL
+                  AND completed_at < ?
+                """,
+                (job_id, cutoff),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                """
+                SELECT * FROM jobs
+                WHERE id = ?
+                  AND completed_at IS NOT NULL
+                  AND (
+                    (
+                      status IN ('succeeded', 'failed')
+                      AND completed_at < ?
+                    )
+                    OR (
+                      status IN ('retention_cleanup_succeeded', 'retention_cleanup_failed')
+                      AND updated_at < ?
+                    )
+                  )
+                """,
+                (job_id, cutoff, claim_stale_cutoff),
+            ).fetchone()
         if row is None:
             return None
-        previous = JobRecord(**dict(row))
-        claim_status = RETENTION_CLAIM_STATUSES[previous.status]
+
+        record = JobRecord(**dict(row))
         now = utc_now()
-        connection.execute(
-            """
-            UPDATE jobs
-            SET status = ?,
-                updated_at = ?
-            WHERE id = ?
-              AND status = ?
-              AND completed_at IS NOT NULL
-              AND completed_at < ?
-            """,
-            (claim_status, now, job_id, previous.status, cutoff),
-        )
+
+        if record.status in RETENTION_CLAIM_STATUSES:
+            previous = record
+            claim_status = RETENTION_CLAIM_STATUSES[record.status]
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND completed_at IS NOT NULL
+                  AND completed_at < ?
+                """,
+                (claim_status, now, job_id, record.status, cutoff),
+            )
+        else:
+            previous_data = asdict(record)
+            previous_data["status"] = RETENTION_ORIGINAL_STATUSES[record.status]
+            previous = JobRecord(**previous_data)
+            claim_status = record.status
+            cursor = connection.execute(
+                """
+                UPDATE jobs
+                SET updated_at = ?
+                WHERE id = ?
+                  AND status = ?
+                  AND updated_at = ?
+                  AND completed_at IS NOT NULL
+                  AND updated_at < ?
+                """,
+                (now, job_id, record.status, record.updated_at, claim_stale_cutoff),
+            )
+        if cursor.rowcount != 1:
+            return None
         row = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if row is None:  # pragma: no cover - impossible after successful update
             raise KeyError(job_id)

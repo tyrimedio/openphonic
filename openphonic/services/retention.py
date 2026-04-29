@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from openphonic.core.database import (
     claim_completed_job_for_retention,
     delete_retention_claim,
-    list_completed_jobs_before,
+    list_retention_cleanup_candidates,
     restore_retention_claim,
 )
 from openphonic.core.logging import log_event
@@ -15,6 +15,7 @@ from openphonic.core.settings import get_settings
 from openphonic.services.storage import delete_job_storage
 
 logger = logging.getLogger(__name__)
+RETENTION_CLAIM_STALE_AFTER = timedelta(minutes=15)
 
 
 @dataclass(frozen=True)
@@ -32,14 +33,20 @@ def cleanup_expired_jobs(now: datetime | None = None) -> RetentionCleanupResult:
     if current_time.tzinfo is None:
         current_time = current_time.replace(tzinfo=UTC)
     cutoff = (current_time - timedelta(days=settings.retention_days)).isoformat(timespec="seconds")
+    claim_stale_cutoff = (current_time - RETENTION_CLAIM_STALE_AFTER).isoformat(timespec="seconds")
 
     deleted_job_ids: list[str] = []
     failed_job_ids: dict[str, str] = {}
-    for candidate in list_completed_jobs_before(settings.database_path, cutoff):
+    for candidate in list_retention_cleanup_candidates(
+        settings.database_path,
+        cutoff,
+        claim_stale_cutoff,
+    ):
         claim = claim_completed_job_for_retention(
             settings.database_path,
             candidate.id,
             cutoff,
+            claim_stale_cutoff,
         )
         if claim is None:
             continue

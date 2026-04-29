@@ -3,6 +3,7 @@ from pathlib import Path
 from openphonic.core.database import (
     claim_completed_job_for_retention,
     claim_failed_job_for_retry,
+    connect,
     create_job,
     delete_retention_claim,
     get_job,
@@ -10,6 +11,7 @@ from openphonic.core.database import (
     list_completed_jobs_before,
     list_jobs,
     list_jobs_by_status,
+    list_retention_cleanup_candidates,
     restore_retention_claim,
     update_job,
 )
@@ -114,6 +116,49 @@ def test_completed_jobs_before_returns_only_terminal_expired_jobs(tmp_path) -> N
     assert [job.id for job in expired] == ["old-success", "old-failed"]
 
 
+def test_retention_cleanup_candidates_include_only_stale_claims(tmp_path) -> None:
+    db_path = tmp_path / "openphonic.sqlite3"
+    init_db(db_path)
+    create_job(
+        db_path,
+        job_id="old-failed",
+        original_filename="input.wav",
+        input_path=Path("/tmp/input.wav"),
+    )
+    update_job(
+        db_path,
+        "old-failed",
+        status="failed",
+        completed_at="2026-01-01T00:00:00+00:00",
+    )
+    claim = claim_completed_job_for_retention(
+        db_path,
+        "old-failed",
+        "2026-01-05T00:00:00+00:00",
+    )
+    assert claim is not None
+
+    candidates = list_retention_cleanup_candidates(
+        db_path,
+        "2026-01-05T00:00:00+00:00",
+        "2000-01-01T00:00:00+00:00",
+    )
+    assert candidates == []
+
+    with connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ?",
+            ("2026-01-01T00:00:00+00:00", "old-failed"),
+        )
+
+    candidates = list_retention_cleanup_candidates(
+        db_path,
+        "2026-01-05T00:00:00+00:00",
+        "2026-01-02T00:00:00+00:00",
+    )
+    assert [job.id for job in candidates] == ["old-failed"]
+
+
 def test_retention_claim_is_short_and_conditional(tmp_path) -> None:
     db_path = tmp_path / "openphonic.sqlite3"
     init_db(db_path)
@@ -175,3 +220,55 @@ def test_retention_claim_can_be_restored_on_storage_failure(tmp_path) -> None:
     assert restore_retention_claim(db_path, claim) is True
 
     assert get_job(db_path, "old-failed") == claim.previous
+
+
+def test_stale_retention_claim_can_be_reclaimed(tmp_path) -> None:
+    db_path = tmp_path / "openphonic.sqlite3"
+    init_db(db_path)
+    create_job(
+        db_path,
+        job_id="old-failed",
+        original_filename="input.wav",
+        input_path=Path("/tmp/input.wav"),
+    )
+    update_job(
+        db_path,
+        "old-failed",
+        status="failed",
+        completed_at="2026-01-01T00:00:00+00:00",
+    )
+    claim = claim_completed_job_for_retention(
+        db_path,
+        "old-failed",
+        "2026-01-05T00:00:00+00:00",
+    )
+    assert claim is not None
+
+    assert (
+        claim_completed_job_for_retention(
+            db_path,
+            "old-failed",
+            "2026-01-05T00:00:00+00:00",
+            "2000-01-01T00:00:00+00:00",
+        )
+        is None
+    )
+
+    with connect(db_path) as connection:
+        connection.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ?",
+            ("2026-01-01T00:00:00+00:00", "old-failed"),
+        )
+
+    reclaimed = claim_completed_job_for_retention(
+        db_path,
+        "old-failed",
+        "2026-01-05T00:00:00+00:00",
+        "2026-01-02T00:00:00+00:00",
+    )
+
+    assert reclaimed is not None
+    assert reclaimed.previous.status == "failed"
+    assert reclaimed.previous.updated_at == "2026-01-01T00:00:00+00:00"
+    assert reclaimed.current.status == "retention_cleanup_failed"
+    assert get_job(db_path, "old-failed") == reclaimed.current
