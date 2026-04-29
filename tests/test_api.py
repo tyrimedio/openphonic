@@ -599,13 +599,15 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
             "/jobs/job-1/transcript/corrections",
             data={
                 "corrections_version": "missing",
-                "segment_0_text": "Corrected intro",
+                "segment_0_text": "Corrected intro\n\nwith context",
                 "segment_1_text": " Second segment",
             },
             follow_redirects=False,
         )
         transcript_response = client.get("/jobs/job-1/transcript")
         artifact_response = client.get("/api/jobs/job-1/artifacts/transcript_corrections.json")
+        corrected_json_response = client.get("/api/jobs/job-1/transcript/corrected.json")
+        corrected_vtt_response = client.get("/api/jobs/job-1/transcript/corrected.vtt")
 
     corrections_path = work_dir / "transcript_corrections.json"
     assert edit_response.status_code == 200
@@ -625,7 +627,7 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
                 "start": 0.0,
                 "end": 1.2,
                 "original_text": " Original intro",
-                "text": "Corrected intro",
+                "text": "Corrected intro\n\nwith context",
             }
         ],
     }
@@ -633,8 +635,22 @@ def test_transcript_edit_page_saves_corrections_artifact(tmp_path, monkeypatch) 
     assert transcript_response.status_code == 200
     assert "Corrected intro" in transcript_response.text
     assert "Corrections JSON" in transcript_response.text
+    assert "Corrected JSON" in transcript_response.text
+    assert "Corrected VTT" in transcript_response.text
     assert "1 corrected" in transcript_response.text
     assert artifact_response.status_code == 200
+    assert corrected_json_response.status_code == 200
+    assert corrected_json_response.headers["content-type"] == "application/json"
+    assert (
+        corrected_json_response.json()["segments"][0]["text"] == "Corrected intro\n\nwith context"
+    )
+    assert corrected_json_response.json()["segments"][1]["text"] == " Second segment"
+    assert corrected_vtt_response.status_code == 200
+    assert corrected_vtt_response.headers["content-type"].startswith("text/vtt")
+    assert "WEBVTT" in corrected_vtt_response.text
+    assert "Corrected intro with context" in corrected_vtt_response.text
+    assert "Corrected intro\n\nwith context" not in corrected_vtt_response.text
+    assert "Second segment" in corrected_vtt_response.text
 
 
 def test_transcript_corrections_reject_stale_edits(tmp_path, monkeypatch) -> None:
