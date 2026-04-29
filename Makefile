@@ -1,4 +1,4 @@
-.PHONY: dev test lint process
+.PHONY: dev test lint process smoke
 
 dev:
 	uvicorn openphonic.main:app --reload
@@ -11,3 +11,6 @@ lint:
 
 process:
 	openphonic process $(INPUT) --output $(OUTPUT)
+
+smoke:
+	openphonic smoke-test

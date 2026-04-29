@@ -46,6 +46,29 @@ uvicorn openphonic.main:app --reload
 
 Then open `http://127.0.0.1:8000`.
 
+## Local Smoke Test
+
+Before enabling optional ML stages, run the local FFmpeg-first pipeline against a
+generated test tone:
+
+```bash
+openphonic smoke-test
+```
+
+By default this writes the processed audio and trace artifacts under
+`data/smoke-test/`. The command generates a tiny WAV with FFmpeg, runs the
+configured pipeline, writes command logs, and prints the output and artifact
+paths. You can override the output or work directory when you want to keep a
+specific run:
+
+```bash
+openphonic smoke-test --output ./processed-smoke.m4a --work-dir ./data/smoke-test/work
+```
+
+Use this as the first local verification pass after setup. If it fails, fix the
+FFmpeg/core pipeline path before testing transcription, diarization, denoise, or
+source separation.
+
 ## Docker
 
 ```bash
