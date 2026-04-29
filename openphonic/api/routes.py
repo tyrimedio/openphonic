@@ -4,7 +4,7 @@ import json
 import math
 import zipfile
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, BinaryIO
 from urllib.parse import parse_qs, quote
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
@@ -164,37 +164,59 @@ def _artifact_bundle_response(job_id: str):
         raise HTTPException(status_code=404, detail="No artifacts available.")
 
     try:
-        artifact_paths = [
-            (artifact.name, job_artifact_path(settings, job_id, artifact.name))
-            for artifact in artifacts
-        ]
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Artifact not found.") from exc
+        artifact_inputs = _open_artifact_bundle_inputs(settings, job_id, artifacts)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail="Artifact could not be opened.") from exc
 
     return StreamingResponse(
-        _stream_artifact_bundle(artifact_paths),
+        _stream_artifact_bundle(artifact_inputs),
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{job_id}-artifacts.zip"'},
     )
 
 
-def _stream_artifact_bundle(artifact_paths: list[tuple[str, Path]]):
+def _open_artifact_bundle_inputs(
+    settings: Any,
+    job_id: str,
+    artifacts: list[JobArtifact],
+) -> list[tuple[str, BinaryIO]]:
+    artifact_inputs: list[tuple[str, BinaryIO]] = []
+    try:
+        for artifact in artifacts:
+            path = job_artifact_path(settings, job_id, artifact.name)
+            artifact_inputs.append((artifact.name, path.open("rb")))
+    except ValueError as exc:
+        _close_artifact_bundle_inputs(artifact_inputs)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        _close_artifact_bundle_inputs(artifact_inputs)
+        raise HTTPException(status_code=404, detail="Artifact not found.") from exc
+    except OSError:
+        _close_artifact_bundle_inputs(artifact_inputs)
+        raise
+    return artifact_inputs
+
+
+def _close_artifact_bundle_inputs(artifact_inputs: list[tuple[str, BinaryIO]]) -> None:
+    for _artifact_name, source in artifact_inputs:
+        source.close()
+
+
+def _stream_artifact_bundle(artifact_inputs: list[tuple[str, BinaryIO]]):
     buffer = _ZipStreamBuffer()
-    with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for artifact_name, path in artifact_paths:
-            info = zipfile.ZipInfo(artifact_name)
-            info.compress_type = zipfile.ZIP_DEFLATED
-            with (
-                path.open("rb") as source,
-                archive.open(info, mode="w", force_zip64=True) as target,
-            ):
-                while chunk := source.read(ARTIFACT_BUNDLE_CHUNK_BYTES):
-                    target.write(chunk)
-                    yield from buffer.drain()
-            yield from buffer.drain()
-    yield from buffer.drain()
+    try:
+        with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for artifact_name, source in artifact_inputs:
+                info = zipfile.ZipInfo(artifact_name)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                with archive.open(info, mode="w", force_zip64=True) as target:
+                    while chunk := source.read(ARTIFACT_BUNDLE_CHUNK_BYTES):
+                        target.write(chunk)
+                        yield from buffer.drain()
+                yield from buffer.drain()
+        yield from buffer.drain()
+    finally:
+        _close_artifact_bundle_inputs(artifact_inputs)
 
 
 def _format_bytes(size_bytes: int) -> str:

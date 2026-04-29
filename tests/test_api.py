@@ -15,7 +15,7 @@ from openphonic.api.routes import (
 from openphonic.core.database import create_job, get_job, init_db, list_jobs, update_job
 from openphonic.core.settings import get_settings
 from openphonic.main import create_app
-from openphonic.services.storage import job_dir
+from openphonic.services.storage import JobArtifact, job_dir
 
 
 def configure_tmp_settings(tmp_path, monkeypatch) -> Path:
@@ -453,6 +453,32 @@ def test_artifact_page_rejects_missing_and_traversal_paths(tmp_path, monkeypatch
 
     assert missing_response.status_code == 404
     assert traversal_response.status_code == 400
+
+
+def test_artifact_bundle_opens_inputs_before_streaming(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    missing_path = work_dir / "missing.json"
+
+    monkeypatch.setattr(
+        "openphonic.api.routes.list_job_artifacts",
+        lambda settings, job_id: [
+            JobArtifact(name="missing.json", path=missing_path, size_bytes=12)
+        ],
+    )
+    monkeypatch.setattr(
+        "openphonic.api.routes.job_artifact_path",
+        lambda settings, job_id, artifact_name: missing_path,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.get("/api/jobs/job-1/artifacts.zip")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Artifact not found."
 
 
 def test_transcript_page_renders_segments_and_word_timestamps(tmp_path, monkeypatch) -> None:
