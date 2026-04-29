@@ -120,6 +120,7 @@ def artifact_version(path: Path) -> str:
 def test_index_route_renders(tmp_path, monkeypatch) -> None:
     configure_tmp_settings(tmp_path, monkeypatch)
     monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: False)
+    monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
     preset_dir = get_settings().preset_dir
     preset_dir.mkdir(parents=True)
     (preset_dir / "daily-show.yml").write_text(
