@@ -9,6 +9,7 @@ from pathlib import Path
 from openphonic.core.settings import Settings
 
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+ARTIFACT_BUNDLE_DIR = ".artifact-bundles"
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,34 @@ def job_dir(settings: Settings, job_id: str) -> Path:
     directory = settings.jobs_dir / job_id
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def artifact_bundle_root(settings: Settings) -> Path:
+    return settings.data_dir / ARTIFACT_BUNDLE_DIR
+
+
+def cleanup_artifact_bundle_snapshots(settings: Settings) -> int:
+    root = artifact_bundle_root(settings)
+    if not root.exists():
+        return 0
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError(f"Artifact bundle root is not a directory: {root}")
+
+    removed = 0
+    for path in sorted(root.iterdir()):
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        else:
+            continue
+        removed += 1
+
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+    return removed
 
 
 def archive_job_attempt(settings: Settings, job_id: str, archive_name: str) -> Path | None:

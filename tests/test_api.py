@@ -1,5 +1,7 @@
 import asyncio
+import io
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,7 @@ from openphonic.api.routes import (
 from openphonic.core.database import create_job, get_job, init_db, list_jobs, update_job
 from openphonic.core.settings import get_settings
 from openphonic.main import create_app
-from openphonic.services.storage import job_dir
+from openphonic.services.storage import JobArtifact, artifact_bundle_root, job_dir
 
 
 def configure_tmp_settings(tmp_path, monkeypatch) -> Path:
@@ -384,6 +386,7 @@ def test_job_artifact_routes_list_and_serve_files(tmp_path, monkeypatch) -> None
 
     with TestClient(create_app()) as client:
         list_response = client.get("/api/jobs/job-1/artifacts")
+        bundle_response = client.get("/api/jobs/job-1/artifacts.zip")
         manifest_response = client.get("/api/jobs/job-1/manifest")
         events_response = client.get("/api/jobs/job-1/events")
         page_response = client.get("/jobs/job-1")
@@ -397,11 +400,25 @@ def test_job_artifact_routes_list_and_serve_files(tmp_path, monkeypatch) -> None
         "pipeline_manifest.json",
     ]
     assert artifacts[0]["url"] == "/api/jobs/job-1/artifacts/00_media_metadata.json"
+    assert bundle_response.status_code == 200
+    assert bundle_response.headers["content-type"] == "application/zip"
+    assert "job-1-artifacts.zip" in bundle_response.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(bundle_response.content)) as bundle:
+        assert bundle.namelist() == [
+            "00_media_metadata.json",
+            "commands.jsonl",
+            "job-events.jsonl",
+            "pipeline_manifest.json",
+        ]
+        assert json.loads(bundle.read("pipeline_manifest.json")) == {"status": "failed"}
+    bundle_root = artifact_bundle_root(get_settings())
+    assert not bundle_root.exists() or list(bundle_root.iterdir()) == []
     assert manifest_response.status_code == 200
     assert manifest_response.json() == {"status": "failed"}
     assert events_response.status_code == 200
     assert "job.started" in events_response.text
     assert page_response.status_code == 200
+    assert "/api/jobs/job-1/artifacts.zip" in page_response.text
     assert "Pipeline manifest" in page_response.text
     assert "job-events.jsonl" in page_response.text
     assert "/jobs/job-1/artifacts/pipeline_manifest.json" in page_response.text
@@ -438,6 +455,48 @@ def test_artifact_page_rejects_missing_and_traversal_paths(tmp_path, monkeypatch
 
     assert missing_response.status_code == 404
     assert traversal_response.status_code == 400
+
+
+def test_artifact_bundle_opens_inputs_before_streaming(tmp_path, monkeypatch) -> None:
+    db_path = configure_tmp_settings(tmp_path, monkeypatch)
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    create_job(db_path, job_id="job-1", original_filename="input.wav", input_path=input_path)
+    work_dir = job_dir(get_settings(), "job-1")
+    missing_path = work_dir / "missing.json"
+
+    monkeypatch.setattr(
+        "openphonic.api.routes.list_job_artifacts",
+        lambda settings, job_id: [
+            JobArtifact(name="missing.json", path=missing_path, size_bytes=12)
+        ],
+    )
+    monkeypatch.setattr(
+        "openphonic.api.routes.job_artifact_path",
+        lambda settings, job_id, artifact_name: missing_path,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.get("/api/jobs/job-1/artifacts.zip")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Artifact not found."
+    bundle_root = artifact_bundle_root(get_settings())
+    assert not bundle_root.exists() or list(bundle_root.iterdir()) == []
+
+
+def test_startup_cleans_abandoned_artifact_bundle_snapshots(tmp_path, monkeypatch) -> None:
+    configure_tmp_settings(tmp_path, monkeypatch)
+    bundle_root = artifact_bundle_root(get_settings())
+    stale_snapshot = bundle_root / "job-1-stale"
+    stale_snapshot.mkdir(parents=True)
+    (stale_snapshot / "artifact.wav").write_bytes(b"leftover")
+
+    with TestClient(create_app()) as client:
+        response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert not bundle_root.exists()
 
 
 def test_transcript_page_renders_segments_and_word_timestamps(tmp_path, monkeypatch) -> None:
