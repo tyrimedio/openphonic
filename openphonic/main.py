@@ -11,7 +11,7 @@ from openphonic.core.logging import configure_logging
 from openphonic.core.settings import get_settings
 from openphonic.services.jobs import recover_interrupted_jobs
 from openphonic.services.retention import cleanup_expired_jobs
-from openphonic.services.storage import ensure_storage
+from openphonic.services.storage import cleanup_artifact_bundle_snapshots, ensure_storage
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 
@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     settings = get_settings()
     ensure_storage(settings)
+    cleanup_artifact_bundle_snapshots(settings)
     init_db(settings.database_path)
     recover_interrupted_jobs()
     cleanup_expired_jobs()

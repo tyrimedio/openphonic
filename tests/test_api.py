@@ -15,7 +15,7 @@ from openphonic.api.routes import (
 from openphonic.core.database import create_job, get_job, init_db, list_jobs, update_job
 from openphonic.core.settings import get_settings
 from openphonic.main import create_app
-from openphonic.services.storage import JobArtifact, job_dir
+from openphonic.services.storage import JobArtifact, artifact_bundle_root, job_dir
 
 
 def configure_tmp_settings(tmp_path, monkeypatch) -> Path:
@@ -411,7 +411,7 @@ def test_job_artifact_routes_list_and_serve_files(tmp_path, monkeypatch) -> None
             "pipeline_manifest.json",
         ]
         assert json.loads(bundle.read("pipeline_manifest.json")) == {"status": "failed"}
-    bundle_root = get_settings().data_dir / ".artifact-bundles"
+    bundle_root = artifact_bundle_root(get_settings())
     assert not bundle_root.exists() or list(bundle_root.iterdir()) == []
     assert manifest_response.status_code == 200
     assert manifest_response.json() == {"status": "failed"}
@@ -481,8 +481,22 @@ def test_artifact_bundle_opens_inputs_before_streaming(tmp_path, monkeypatch) ->
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Artifact not found."
-    bundle_root = get_settings().data_dir / ".artifact-bundles"
+    bundle_root = artifact_bundle_root(get_settings())
     assert not bundle_root.exists() or list(bundle_root.iterdir()) == []
+
+
+def test_startup_cleans_abandoned_artifact_bundle_snapshots(tmp_path, monkeypatch) -> None:
+    configure_tmp_settings(tmp_path, monkeypatch)
+    bundle_root = artifact_bundle_root(get_settings())
+    stale_snapshot = bundle_root / "job-1-stale"
+    stale_snapshot.mkdir(parents=True)
+    (stale_snapshot / "artifact.wav").write_bytes(b"leftover")
+
+    with TestClient(create_app()) as client:
+        response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert not bundle_root.exists()
 
 
 def test_transcript_page_renders_segments_and_word_timestamps(tmp_path, monkeypatch) -> None:

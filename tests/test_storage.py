@@ -7,6 +7,8 @@ import pytest
 from openphonic.core.settings import Settings
 from openphonic.services.storage import (
     archive_job_attempt,
+    artifact_bundle_root,
+    cleanup_artifact_bundle_snapshots,
     delete_job_storage,
     job_artifact_path,
     job_dir,
@@ -202,6 +204,34 @@ def test_delete_job_storage_removes_upload_and_artifact_directories(tmp_path) ->
 
     assert not upload_root.exists()
     assert not work_root.exists()
+
+
+def test_cleanup_artifact_bundle_snapshots_removes_abandoned_hardlinks(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        database_path=tmp_path / "data" / "openphonic.sqlite3",
+        pipeline_config=tmp_path / "config.yml",
+        preset_dir=tmp_path / "data" / "presets",
+        max_upload_mb=10,
+        retention_days=0,
+        public_base_url="http://127.0.0.1:8000",
+        hf_token=None,
+        whisper_model="small",
+        whisper_device="auto",
+        pyannote_model="pyannote/speaker-diarization-3.1",
+        deepfilternet_bin="deepFilter",
+    )
+    source = job_dir(settings, "job-1") / "artifact.wav"
+    source.write_bytes(b"artifact")
+    snapshot = artifact_bundle_root(settings) / "job-1-stale" / "artifact.wav"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.hardlink_to(source)
+
+    removed = cleanup_artifact_bundle_snapshots(settings)
+
+    assert removed == 1
+    assert source.read_bytes() == b"artifact"
+    assert not artifact_bundle_root(settings).exists()
 
 
 def test_delete_job_storage_rejects_invalid_job_ids(tmp_path) -> None:

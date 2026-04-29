@@ -45,6 +45,7 @@ from openphonic.services.jobs import (
 )
 from openphonic.services.storage import (
     JobArtifact,
+    artifact_bundle_root,
     job_artifact_path,
     job_dir,
     list_job_artifacts,
@@ -182,7 +183,7 @@ def _snapshot_artifact_bundle_inputs(
     job_id: str,
     artifacts: list[JobArtifact],
 ) -> tuple[Path, list[tuple[str, Path]]]:
-    snapshot_dir = settings.data_dir / ".artifact-bundles" / f"{job_id}-{uuid.uuid4().hex}"
+    snapshot_dir = artifact_bundle_root(settings) / f"{job_id}-{uuid.uuid4().hex}"
     artifact_paths: list[tuple[str, Path]] = []
     try:
         for artifact in artifacts:
