@@ -6,6 +6,7 @@ import pytest
 from openphonic.pipeline.deepgram import (
     DeepgramError,
     DeepgramOptions,
+    deepgram_response_to_transcript,
     transcribe_deepgram_file,
 )
 
@@ -169,3 +170,40 @@ def test_transcribe_deepgram_file_reports_http_errors(tmp_path, monkeypatch) -> 
 
     with pytest.raises(DeepgramError, match="HTTP 401"):
         transcribe_deepgram_file(audio_path, DeepgramOptions(api_key="dg_test"))
+
+
+def test_deepgram_transcript_uses_channel_detected_language() -> None:
+    transcript = deepgram_response_to_transcript(
+        {
+            "metadata": {"duration": 1.2},
+            "results": {
+                "channels": [
+                    {
+                        "detected_language": "es",
+                        "language_confidence": 0.87,
+                        "alternatives": [
+                            {
+                                "transcript": "Hola mundo.",
+                                "confidence": 0.94,
+                                "words": [
+                                    {
+                                        "word": "hola",
+                                        "punctuated_word": "Hola",
+                                        "start": 0.0,
+                                        "end": 0.4,
+                                        "confidence": 0.95,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+        model="nova-3",
+        language=None,
+    )
+
+    assert transcript["language"] == "es"
+    assert transcript["language_probability"] == 0.87
+    assert transcript["segments"][0]["text"] == "Hola mundo."

@@ -58,20 +58,24 @@ def deepgram_response_to_transcript(
     model: str,
     language: str | None,
 ) -> dict[str, Any]:
-    alternative = _primary_alternative(response)
+    channel = _primary_channel(response)
+    alternative = _primary_alternative_from_channel(channel)
     utterances = _response_utterances(response)
     segments = (
         [_utterance_to_segment(index, utterance) for index, utterance in enumerate(utterances)]
         if utterances
         else _alternative_segments(alternative)
     )
+    language_confidence = _finite_float(alternative.get("language_confidence"))
+    if language_confidence is None:
+        language_confidence = _finite_float(channel.get("language_confidence"))
     metadata = _mapping(response.get("metadata"))
     return {
         "schema_version": 1,
         "engine": "deepgram",
         "model": model,
-        "language": alternative.get("language") or language,
-        "language_probability": alternative.get("language_confidence"),
+        "language": alternative.get("language") or channel.get("detected_language") or language,
+        "language_probability": language_confidence,
         "duration": _finite_float(metadata.get("duration")),
         "segments": segments,
     }
@@ -181,14 +185,21 @@ def _post_audio_file(
     return payload
 
 
-def _primary_alternative(response: dict[str, Any]) -> dict[str, Any]:
+def _primary_channel(response: dict[str, Any]) -> dict[str, Any]:
     results = _mapping(response.get("results"))
     channels = results.get("channels")
     if not isinstance(channels, list) or not channels:
         raise DeepgramError("Deepgram response did not include any result channels.")
     if not isinstance(channels[0], dict):
         raise DeepgramError("Deepgram response channel must be a JSON object.")
-    channel = channels[0]
+    return channels[0]
+
+
+def _primary_alternative(response: dict[str, Any]) -> dict[str, Any]:
+    return _primary_alternative_from_channel(_primary_channel(response))
+
+
+def _primary_alternative_from_channel(channel: dict[str, Any]) -> dict[str, Any]:
     alternatives = channel.get("alternatives")
     if not isinstance(alternatives, list) or not alternatives:
         raise DeepgramError("Deepgram response did not include a transcription alternative.")
