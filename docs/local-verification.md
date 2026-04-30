@@ -129,6 +129,13 @@ diagnostics. Failed jobs should remain inspectable and retryable.
 
 Only start this after the FFmpeg-only smoke and web checks pass.
 
+This section covers the current local ML path. The planned hosted deployment
+will use an optional Deepgram provider adapter for transcription and diarization
+instead of requiring non-technical users to run `faster-whisper` or
+`pyannote.audio` locally. Until that adapter exists, keep hosted-provider
+environment variables out of production config and use the readiness checks below
+to confirm local ML dependencies are either available or clearly blocked.
+
 ```bash
 pip install -e ".[dev,ml]"
 openphonic readiness --preset transcript-review --strict
