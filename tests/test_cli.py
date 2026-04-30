@@ -966,10 +966,32 @@ def test_inspect_commands_reports_command_summary(
     assert "Started: 2" in captured.out
     assert "Succeeded: 2" in captured.out
     assert "Failed: 0" in captured.out
+    assert "Unterminated: 0" in captured.out
     assert "Malformed entries: 0" in captured.out
     assert "Executables: ffmpeg=1, ffprobe=1" in captured.out
     assert "Total duration: 0.037s" in captured.out
     assert "Warnings:" not in captured.out
+
+
+def test_inspect_commands_strict_fails_on_unterminated_commands(
+    tmp_path,
+    capsys,
+) -> None:
+    command_log_path = tmp_path / "commands.jsonl"
+    command_log_path.write_text(
+        json.dumps({"event": "process.started", "executable": "ffmpeg"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_commands(argparse.Namespace(command_log=str(command_log_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Started: 1" in captured.out
+    assert "Succeeded: 0" in captured.out
+    assert "Failed: 0" in captured.out
+    assert "Unterminated: 1" in captured.out
+    assert "1 command start(s) have no matching terminal event." in captured.out
 
 
 def test_inspect_commands_strict_fails_on_failures_and_malformed_entries(

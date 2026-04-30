@@ -1029,6 +1029,14 @@ def _inspect_command_log(command_log_path: Path) -> tuple[dict[str, Any], list[s
 
     if entry_count == 0:
         warnings.append("Command log has no entries.")
+    unterminated = max(
+        0,
+        event_counts["process.started"]
+        - event_counts["process.succeeded"]
+        - event_counts["process.failed"],
+    )
+    if unterminated:
+        warnings.append(f"{unterminated} command start(s) have no matching terminal event.")
 
     return (
         {
@@ -1037,6 +1045,7 @@ def _inspect_command_log(command_log_path: Path) -> tuple[dict[str, Any], list[s
             "started": event_counts["process.started"],
             "succeeded": event_counts["process.succeeded"],
             "failed": event_counts["process.failed"],
+            "unterminated": unterminated,
             "executables": executable_counts,
             "failure_rows": failure_rows,
             "total_duration_seconds": total_duration_seconds,
@@ -1059,6 +1068,7 @@ def inspect_commands(args: argparse.Namespace) -> int:
     print(f"Started: {summary['started']}")
     print(f"Succeeded: {summary['succeeded']}")
     print(f"Failed: {summary['failed']}")
+    print(f"Unterminated: {summary['unterminated']}")
     print(f"Malformed entries: {summary['malformed_entries']}")
     executable_summary = ", ".join(
         f"{executable}={count}" for executable, count in sorted(summary["executables"].items())
