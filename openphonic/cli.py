@@ -755,7 +755,7 @@ def _path_status(
             candidates.append(base_dir / raw_path)
         if fallback_dir is not None:
             candidates.append(fallback_dir / raw_path)
-        if not candidates:
+        if raw_path not in candidates:
             candidates.append(raw_path)
 
     for candidate in candidates:

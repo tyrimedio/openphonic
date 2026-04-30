@@ -775,6 +775,56 @@ def test_inspect_job_anchors_relative_manifest_paths_to_job_base(
     assert "Warnings:" not in captured.out
 
 
+def test_inspect_job_keeps_raw_relative_path_fallback_for_symlinked_data(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_dir = tmp_path / "project"
+    real_data_dir = tmp_path / "real-data"
+    symlink_data_dir = project_dir / "data"
+    work_dir = symlink_data_dir / "jobs" / "job-1"
+    upload_dir = symlink_data_dir / "uploads" / "job-1"
+    project_dir.mkdir()
+    real_data_dir.mkdir()
+    symlink_data_dir.symlink_to(real_data_dir, target_is_directory=True)
+    work_dir.mkdir(parents=True)
+    upload_dir.mkdir(parents=True)
+    input_path = Path("data/uploads/job-1/input.wav")
+    output_path = Path("data/jobs/job-1/processed.m4a")
+    metadata_path = Path("data/jobs/job-1/00_media_metadata.json")
+    (project_dir / input_path).write_bytes(b"input")
+    (project_dir / output_path).write_bytes(b"output")
+    (project_dir / metadata_path).write_text("{}", encoding="utf-8")
+    (work_dir / "pipeline_manifest.json").write_text(
+        json.dumps(
+            {
+                "created_at": "2026-04-30T00:00:00+00:00",
+                "status": "succeeded",
+                "pipeline_name": "podcast-default",
+                "input_path": str(input_path),
+                "work_dir": "data/jobs/job-1",
+                "output_path": str(output_path),
+                "artifacts": {
+                    "final_audio": str(output_path),
+                    "media_metadata": str(metadata_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = inspect_job(argparse.Namespace(work_dir="data/jobs/job-1", strict=True))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Input: {input_path} [ok]" in captured.out
+    assert f"Output: {output_path} [ok]" in captured.out
+    assert "Artifacts: 2/2 present" in captured.out
+    assert "Warnings:" not in captured.out
+
+
 def test_inspect_job_strict_fails_on_missing_paths(
     tmp_path,
     capsys,
