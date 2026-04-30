@@ -148,7 +148,10 @@ For diarization, configure `HF_TOKEN` and validate separately:
 
 ```bash
 openphonic readiness --preset speaker-diarization
-openphonic inspect-diarization ./data/jobs/<job-id>/diarization.json --strict
+openphonic process ./speech-sample.wav \
+  --preset speaker-diarization \
+  --output ./speaker-processed.m4a
+openphonic inspect-diarization ./speaker-processed/diarization.json --strict
 ```
 
 For speech cleanup, install/configure DeepFilterNet and test on noisy speech:
