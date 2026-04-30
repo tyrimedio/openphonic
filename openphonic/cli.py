@@ -958,6 +958,8 @@ def _inspect_job_events(job_events_path: Path) -> tuple[dict[str, Any], list[str
     warnings: list[str] = []
     event_counts: Counter[str] = Counter()
     job_ids: set[str] = set()
+    progress_job_ids: set[str] = set()
+    terminal_job_ids: set[str] = set()
     open_job_starts: defaultdict[str, deque[int]] = defaultdict(deque)
     open_cut_apply_starts: defaultdict[str, deque[int]] = defaultdict(deque)
     failure_rows: list[dict[str, Any]] = []
@@ -1021,6 +1023,11 @@ def _inspect_job_events(job_events_path: Path) -> tuple[dict[str, Any], list[str
                     continue
 
                 if event == "job.progress":
+                    progress_job_ids.add(job_id)
+                    if not open_job_starts[job_id]:
+                        warnings.append(
+                            f"Line {line_number} job.progress has no matching job.started event."
+                        )
                     progress = _valid_progress(row.get("progress"))
                     if progress is None:
                         warnings.append(f"Line {line_number} job.progress has invalid progress.")
@@ -1034,6 +1041,7 @@ def _inspect_job_events(job_events_path: Path) -> tuple[dict[str, Any], list[str
                     continue
 
                 if event in {"job.succeeded", "job.failed", "job.interrupted"}:
+                    terminal_job_ids.add(job_id)
                     if open_job_starts[job_id]:
                         open_job_starts[job_id].popleft()
                     elif event != "job.interrupted":
@@ -1095,6 +1103,13 @@ def _inspect_job_events(job_events_path: Path) -> tuple[dict[str, Any], list[str
 
     if entry_count == 0:
         warnings.append("Job event log has no entries.")
+
+    progress_without_terminal = sorted(progress_job_ids - terminal_job_ids)
+    if progress_without_terminal:
+        labels = ", ".join(progress_without_terminal)
+        warnings.append(f"Job progress event(s) have no terminal job status: {labels}.")
+        if final_status == "-":
+            final_status = "running"
 
     unterminated_jobs = sum(len(starts) for starts in open_job_starts.values())
     if unterminated_jobs:

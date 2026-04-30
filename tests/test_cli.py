@@ -1002,6 +1002,36 @@ def test_inspect_events_strict_fails_on_unterminated_job_start(
     assert "1 job start(s) have no terminal event." in captured.out
 
 
+def test_inspect_events_strict_fails_on_progress_without_terminal_status(
+    tmp_path,
+    capsys,
+) -> None:
+    job_events_path = tmp_path / "job-events.jsonl"
+    job_events_path.write_text(
+        json.dumps(
+            {
+                "event": "job.progress",
+                "timestamp": "2026-04-30T00:00:00+00:00",
+                "job_id": "job-1",
+                "current_stage": "loudness",
+                "progress": 75,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_events(argparse.Namespace(job_events=str(job_events_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Final job status: running" in captured.out
+    assert "Job progress: 1" in captured.out
+    assert "Unterminated jobs: 0" in captured.out
+    assert "Line 1 job.progress has no matching job.started event." in captured.out
+    assert "Job progress event(s) have no terminal job status: job-1." in captured.out
+
+
 def test_inspect_events_strict_fails_on_failures_and_malformed_entries(
     tmp_path,
     capsys,
