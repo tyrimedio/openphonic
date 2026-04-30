@@ -7,7 +7,12 @@ from pathlib import Path
 
 from openphonic.core.logging import configure_logging
 from openphonic.core.settings import Settings, get_settings
-from openphonic.pipeline.config import PipelineConfig, load_pipeline_config_for_preset
+from openphonic.pipeline.config import (
+    PipelineConfig,
+    PipelinePreset,
+    available_presets,
+    load_pipeline_config_for_preset,
+)
 from openphonic.pipeline.ffmpeg import run_command
 from openphonic.pipeline.preflight import format_preflight_issues, pipeline_preflight_issues
 from openphonic.pipeline.runner import PipelineRunner
@@ -63,6 +68,14 @@ def _load_smoke_config(args: argparse.Namespace, settings: Settings) -> Pipeline
     return PipelineConfig.from_path(Path(args.config or settings.pipeline_config))
 
 
+def _readiness_messages(preset: PipelinePreset, settings: Settings) -> list[str]:
+    try:
+        config = PipelineConfig.from_path(preset.path)
+        return [issue.message for issue in pipeline_preflight_issues(config, settings)]
+    except (OSError, TypeError, ValueError, AttributeError) as exc:
+        return [f"Preset config could not be inspected: {exc}"]
+
+
 def process_file(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
@@ -81,6 +94,27 @@ def process_file(args: argparse.Namespace) -> int:
     print(f"Processed audio: {output_path}")
     for name, path in result.artifacts.items():
         print(f"{name}: {path}")
+    return 0
+
+
+def readiness(args: argparse.Namespace) -> int:
+    configure_logging()
+    settings = get_settings()
+    blocked = 0
+    presets = available_presets(settings.pipeline_config, settings.preset_dir)
+
+    for preset in presets:
+        messages = _readiness_messages(preset, settings)
+        if messages:
+            blocked += 1
+            print(f"[blocked] {preset.id} - {preset.label}")
+            for message in messages:
+                print(f"  - {message}")
+        else:
+            print(f"[ready] {preset.id} - {preset.label}")
+
+    if args.strict and blocked:
+        return 2
     return 0
 
 
@@ -159,6 +193,17 @@ def main() -> int:
         help="Generated sine wave frequency in Hz.",
     )
     smoke.set_defaults(func=smoke_test)
+
+    readiness_check = subparsers.add_parser(
+        "readiness",
+        help="Report which pipeline presets can run on this host.",
+    )
+    readiness_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return a non-zero exit code if any preset is blocked.",
+    )
+    readiness_check.set_defaults(func=readiness)
 
     args = parser.parse_args()
     return args.func(args)
