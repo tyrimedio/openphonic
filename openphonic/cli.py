@@ -32,6 +32,16 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
+def _non_negative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise argparse.ArgumentTypeError("must be finite and non-negative") from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be finite and non-negative")
+    return parsed
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -366,6 +376,141 @@ def inspect_transcript(args: argparse.Namespace) -> int:
     return 0
 
 
+def _valid_speaker_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _inspect_diarization(
+    diarization: dict[str, Any],
+    *,
+    duration_bound: float | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    segments = diarization.get("segments")
+    if not isinstance(segments, list):
+        raise ValueError("Diarization segments must be a list.")
+
+    warnings: list[str] = []
+    speakers: set[str] = set()
+    timed_segments = 0
+    invalid_timing = 0
+    missing_speakers = 0
+    total_speaker_time = 0.0
+
+    for segment_index, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            warnings.append(f"Segment {segment_index} is not an object.")
+            invalid_timing += 1
+            missing_speakers += 1
+            continue
+
+        speaker = segment.get("speaker")
+        if isinstance(speaker, str) and speaker.strip():
+            speakers.add(speaker.strip())
+        else:
+            missing_speakers += 1
+
+        start = _finite_float(segment.get("start"))
+        end = _finite_float(segment.get("end"))
+        segment_timing_valid = (
+            start is not None and end is not None and start >= 0 and end >= 0 and end >= start
+        )
+        segment_within_duration = duration_bound is None or (
+            segment_timing_valid and end is not None and end <= duration_bound
+        )
+        if (
+            segment_timing_valid
+            and segment_within_duration
+            and start is not None
+            and end is not None
+        ):
+            timed_segments += 1
+            total_speaker_time += end - start
+        else:
+            invalid_timing += 1
+
+    declared_speaker_count = _valid_speaker_count(diarization.get("speaker_count"))
+    if "speaker_count" in diarization and declared_speaker_count is None:
+        warnings.append("Diarization speaker_count must be a non-negative integer.")
+    if declared_speaker_count is not None and declared_speaker_count != len(speakers):
+        warnings.append(
+            "Diarization speaker_count does not match detected speaker labels "
+            f"({declared_speaker_count} != {len(speakers)})."
+        )
+    if not segments:
+        warnings.append("Diarization has no segments.")
+    if missing_speakers:
+        warnings.append(f"{missing_speakers} diarization segment(s) have no speaker label.")
+    if invalid_timing:
+        warnings.append(f"{invalid_timing} diarization segment timing value(s) are invalid.")
+
+    return (
+        {
+            "engine": diarization.get("engine") or "-",
+            "model": diarization.get("model") or "-",
+            "declared_speaker_count": declared_speaker_count,
+            "detected_speaker_count": len(speakers),
+            "segment_count": len(segments),
+            "timed_segments": timed_segments,
+            "total_speaker_time": total_speaker_time,
+        },
+        warnings,
+    )
+
+
+def inspect_diarization(args: argparse.Namespace) -> int:
+    configure_logging()
+    diarization_path = Path(args.diarization).expanduser().resolve()
+    try:
+        diarization = json.loads(diarization_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"Diarization inspection failed: {exc}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError as exc:
+        print(f"Diarization inspection failed: invalid UTF-8: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"Diarization inspection failed: invalid JSON: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"Diarization inspection failed: invalid JSON: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(diarization, dict):
+        print("Diarization inspection failed: diarization must be a JSON object.", file=sys.stderr)
+        return 2
+    try:
+        summary, warnings = _inspect_diarization(
+            diarization,
+            duration_bound=getattr(args, "duration", None),
+        )
+    except ValueError as exc:
+        print(f"Diarization inspection failed: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Diarization: {diarization_path}")
+    print(f"Engine: {summary['engine']}")
+    print(f"Model: {summary['model']}")
+    declared_speaker_count = summary["declared_speaker_count"]
+    print(
+        f"Declared speakers: {declared_speaker_count}"
+        if declared_speaker_count is not None
+        else "Declared speakers: -"
+    )
+    print(f"Detected speakers: {summary['detected_speaker_count']}")
+    print(f"Segments: {summary['segment_count']}")
+    print(f"Timed segments: {summary['timed_segments']}/{summary['segment_count']}")
+    print(f"Total speaker time: {summary['total_speaker_time']:.3f}s")
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"  - {warning}")
+
+    if args.strict and warnings:
+        return 2
+    return 0
+
+
 def smoke_test(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
@@ -471,6 +616,23 @@ def main() -> int:
         help="Return a non-zero exit code when transcript quality warnings are present.",
     )
     transcript.set_defaults(func=inspect_transcript)
+
+    diarization = subparsers.add_parser(
+        "inspect-diarization",
+        help="Summarize diarization artifact speaker and timing coverage.",
+    )
+    diarization.add_argument("diarization", help="Path to diarization.json.")
+    diarization.add_argument(
+        "--duration",
+        type=_non_negative_float,
+        help="Optional source audio duration in seconds for timing bounds.",
+    )
+    diarization.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return a non-zero exit code when diarization quality warnings are present.",
+    )
+    diarization.set_defaults(func=inspect_diarization)
 
     args = parser.parse_args()
     return args.func(args)
