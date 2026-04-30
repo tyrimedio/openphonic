@@ -92,6 +92,20 @@ Use this as the first local verification pass after setup. If it fails, fix the
 FFmpeg/core pipeline path before testing transcription, diarization, denoise, or
 source separation.
 
+## Job Inspection
+
+After a smoke test, CLI process run, or web job finishes, inspect the work
+directory and verify the manifest still points at existing files:
+
+```bash
+openphonic inspect-job ./data/smoke-test/work
+openphonic inspect-job ./data/jobs/<job-id> --strict
+```
+
+The command reads `pipeline_manifest.json`, reports the pipeline status, input,
+output, and artifact paths, and warns when expected files are missing. Use
+`--strict` when local validation scripts should fail on missing artifacts.
+
 ## Preset Readiness
 
 Check which built-in and custom presets can run on the current machine before

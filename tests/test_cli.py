@@ -1,4 +1,5 @@
 import argparse
+import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 from openphonic.cli import (
     inspect_cut_suggestions,
     inspect_diarization,
+    inspect_job,
     inspect_transcript,
     process_file,
     readiness,
@@ -677,6 +679,247 @@ def test_inspect_cut_suggestions_rejects_invalid_artifacts(
         "Cut suggestion inspection failed: cut suggestions must be a JSON object."
         in capsys.readouterr().err
     )
+
+
+def test_inspect_job_reports_manifest_artifacts(
+    tmp_path,
+    capsys,
+) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    input_path = tmp_path / "input.wav"
+    output_path = work_dir / "processed.m4a"
+    metadata_path = work_dir / "00_media_metadata.json"
+    manifest_path = work_dir / "pipeline_manifest.json"
+    input_path.write_bytes(b"input")
+    output_path.write_bytes(b"output")
+    metadata_path.write_text("{}", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "created_at": "2026-04-30T00:00:00+00:00",
+                "status": "succeeded",
+                "pipeline_name": "podcast-default",
+                "input_path": str(input_path),
+                "work_dir": str(work_dir),
+                "output_path": str(output_path),
+                "artifacts": {
+                    "final_audio": str(output_path),
+                    "media_metadata": str(metadata_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = inspect_job(argparse.Namespace(work_dir=str(work_dir), strict=True))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Job work directory: {work_dir.resolve()}" in captured.out
+    assert f"Manifest: {manifest_path.resolve()}" in captured.out
+    assert "Status: succeeded" in captured.out
+    assert "Pipeline: podcast-default" in captured.out
+    assert f"Input: {input_path} [ok]" in captured.out
+    assert f"Output: {output_path} [ok]" in captured.out
+    assert "Artifacts: 2/2 present" in captured.out
+    assert f"  - final_audio: {output_path} [ok]" in captured.out
+    assert f"  - media_metadata: {metadata_path} [ok]" in captured.out
+    assert "Warnings:" not in captured.out
+
+
+def test_inspect_job_anchors_relative_manifest_paths_to_job_base(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_dir = tmp_path / "project"
+    work_dir = project_dir / "data" / "jobs" / "job-1"
+    upload_dir = project_dir / "data" / "uploads" / "job-1"
+    unrelated_cwd = tmp_path / "elsewhere"
+    work_dir.mkdir(parents=True)
+    upload_dir.mkdir(parents=True)
+    unrelated_cwd.mkdir()
+    input_path = upload_dir / "input.wav"
+    output_path = work_dir / "processed.m4a"
+    metadata_path = work_dir / "00_media_metadata.json"
+    input_path.write_bytes(b"input")
+    output_path.write_bytes(b"output")
+    metadata_path.write_text("{}", encoding="utf-8")
+    (work_dir / "pipeline_manifest.json").write_text(
+        json.dumps(
+            {
+                "created_at": "2026-04-30T00:00:00+00:00",
+                "status": "succeeded",
+                "pipeline_name": "podcast-default",
+                "input_path": "data/uploads/job-1/input.wav",
+                "work_dir": "data/jobs/job-1",
+                "output_path": "data/jobs/job-1/processed.m4a",
+                "artifacts": {
+                    "final_audio": "data/jobs/job-1/processed.m4a",
+                    "media_metadata": "data/jobs/job-1/00_media_metadata.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(unrelated_cwd)
+
+    result = inspect_job(argparse.Namespace(work_dir=str(work_dir.resolve()), strict=True))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Input: {input_path} [ok]" in captured.out
+    assert f"Output: {output_path} [ok]" in captured.out
+    assert "Artifacts: 2/2 present" in captured.out
+    assert "Warnings:" not in captured.out
+
+
+def test_inspect_job_keeps_raw_relative_path_fallback_for_symlinked_data(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_dir = tmp_path / "project"
+    real_data_dir = tmp_path / "real-data"
+    symlink_data_dir = project_dir / "data"
+    work_dir = symlink_data_dir / "jobs" / "job-1"
+    upload_dir = symlink_data_dir / "uploads" / "job-1"
+    project_dir.mkdir()
+    real_data_dir.mkdir()
+    symlink_data_dir.symlink_to(real_data_dir, target_is_directory=True)
+    work_dir.mkdir(parents=True)
+    upload_dir.mkdir(parents=True)
+    input_path = Path("data/uploads/job-1/input.wav")
+    output_path = Path("data/jobs/job-1/processed.m4a")
+    metadata_path = Path("data/jobs/job-1/00_media_metadata.json")
+    (project_dir / input_path).write_bytes(b"input")
+    (project_dir / output_path).write_bytes(b"output")
+    (project_dir / metadata_path).write_text("{}", encoding="utf-8")
+    (work_dir / "pipeline_manifest.json").write_text(
+        json.dumps(
+            {
+                "created_at": "2026-04-30T00:00:00+00:00",
+                "status": "succeeded",
+                "pipeline_name": "podcast-default",
+                "input_path": str(input_path),
+                "work_dir": "data/jobs/job-1",
+                "output_path": str(output_path),
+                "artifacts": {
+                    "final_audio": str(output_path),
+                    "media_metadata": str(metadata_path),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(project_dir)
+
+    result = inspect_job(argparse.Namespace(work_dir="data/jobs/job-1", strict=True))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Input: {input_path} [ok]" in captured.out
+    assert f"Output: {output_path} [ok]" in captured.out
+    assert "Artifacts: 2/2 present" in captured.out
+    assert "Warnings:" not in captured.out
+
+
+def test_inspect_job_ignores_raw_relative_paths_when_manifest_base_exists(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_dir = tmp_path / "project"
+    work_dir = project_dir / "data" / "jobs" / "job-1"
+    upload_dir = project_dir / "data" / "uploads" / "job-1"
+    stale_cwd = tmp_path / "elsewhere"
+    stale_job_dir = stale_cwd / "data" / "jobs" / "job-1"
+    work_dir.mkdir(parents=True)
+    upload_dir.mkdir(parents=True)
+    stale_job_dir.mkdir(parents=True)
+    input_path = upload_dir / "input.wav"
+    output_path = work_dir / "processed.m4a"
+    metadata_path = work_dir / "00_media_metadata.json"
+    input_path.write_bytes(b"input")
+    (stale_job_dir / "processed.m4a").write_bytes(b"stale-output")
+    (stale_job_dir / "00_media_metadata.json").write_text("{}", encoding="utf-8")
+    (work_dir / "pipeline_manifest.json").write_text(
+        json.dumps(
+            {
+                "created_at": "2026-04-30T00:00:00+00:00",
+                "status": "succeeded",
+                "pipeline_name": "podcast-default",
+                "input_path": "data/uploads/job-1/input.wav",
+                "work_dir": "data/jobs/job-1",
+                "output_path": "data/jobs/job-1/processed.m4a",
+                "artifacts": {
+                    "final_audio": "data/jobs/job-1/processed.m4a",
+                    "media_metadata": "data/jobs/job-1/00_media_metadata.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(stale_cwd)
+
+    result = inspect_job(argparse.Namespace(work_dir=str(work_dir.resolve()), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert f"Pipeline output is missing: {output_path}" in captured.out
+    assert f"Pipeline artifact final_audio is missing: {output_path}" in captured.out
+    assert f"Pipeline artifact media_metadata is missing: {metadata_path}" in captured.out
+    assert "Artifacts: 0/2 present" in captured.out
+
+
+def test_inspect_job_strict_fails_on_missing_paths(
+    tmp_path,
+    capsys,
+) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    manifest_path = work_dir / "pipeline_manifest.json"
+    input_path = tmp_path / "input.wav"
+    output_path = work_dir / "processed.m4a"
+    artifact_path = work_dir / "00_media_metadata.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "status": "succeeded",
+                "pipeline_name": "podcast-default",
+                "input_path": str(input_path),
+                "work_dir": str(work_dir),
+                "output_path": str(output_path),
+                "artifacts": {"media_metadata": str(artifact_path)},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = inspect_job(argparse.Namespace(work_dir=str(work_dir), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Status: succeeded" in captured.out
+    assert "Artifacts: 0/1 present" in captured.out
+    assert f"Pipeline input is missing: {input_path}" in captured.out
+    assert f"Pipeline output is missing: {output_path}" in captured.out
+    assert f"Pipeline artifact media_metadata is missing: {artifact_path}" in captured.out
+
+
+def test_inspect_job_rejects_malformed_manifest(
+    tmp_path,
+    capsys,
+) -> None:
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / "pipeline_manifest.json").write_text("[]", encoding="utf-8")
+
+    result = inspect_job(argparse.Namespace(work_dir=str(work_dir), strict=False))
+
+    assert result == 2
+    assert "Job inspection failed: manifest must be a JSON object." in capsys.readouterr().err
 
 
 def test_smoke_test_generates_input_and_copies_output(
