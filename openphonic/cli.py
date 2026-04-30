@@ -10,10 +10,12 @@ import yaml
 from openphonic.core.logging import configure_logging
 from openphonic.core.settings import Settings, get_settings
 from openphonic.pipeline.config import (
+    CUSTOM_PRESET_ID,
     PipelineConfig,
     PipelinePreset,
     available_presets,
     load_pipeline_config_for_preset,
+    preset_by_id,
 )
 from openphonic.pipeline.ffmpeg import run_command
 from openphonic.pipeline.preflight import format_preflight_issues, pipeline_preflight_issues
@@ -78,14 +80,77 @@ def _core_media_messages() -> list[str]:
     ]
 
 
+def _raw_config_schema_messages(path: Path) -> list[str]:
+    with path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+    if raw is None:
+        return []
+    if not isinstance(raw, dict):
+        return ["Preset config must be a mapping."]
+
+    stages = raw.get("stages") if "stages" in raw else {}
+    if not isinstance(stages, dict):
+        return ["Preset stages must be a mapping."]
+    return [
+        f"Preset stage {stage_name!r} must be a mapping."
+        for stage_name, stage_config in stages.items()
+        if not isinstance(stage_config, dict)
+    ]
+
+
 def _readiness_messages(preset: PipelinePreset, settings: Settings) -> list[str]:
     messages = _core_media_messages()
     try:
+        schema_messages = _raw_config_schema_messages(preset.path)
+        if schema_messages:
+            messages.extend(schema_messages)
+            return messages
         config = PipelineConfig.from_path(preset.path)
         messages.extend(issue.message for issue in pipeline_preflight_issues(config, settings))
     except (OSError, TypeError, ValueError, AttributeError, yaml.YAMLError) as exc:
         messages.append(f"Preset config could not be inspected: {exc}")
     return messages
+
+
+def _custom_readiness_preset(preset_id: str, preset_dir: Path) -> PipelinePreset | None:
+    prefix = "custom:"
+    if not preset_id.startswith(prefix):
+        return None
+    stem = preset_id.removeprefix(prefix)
+    if not CUSTOM_PRESET_ID.fullmatch(stem):
+        return None
+
+    directory = Path(preset_dir).expanduser()
+    for path in (directory / f"{stem}.yml", directory / f"{stem}.yaml"):
+        if path.is_file():
+            label = stem.replace("_", " ").replace("-", " ").strip().title() or stem
+            return PipelinePreset(
+                id=preset_id,
+                label=label,
+                description=f"Custom preset from {path.name}.",
+                path=path,
+            )
+    return None
+
+
+def _readiness_preset_by_id(preset_id: str, settings: Settings) -> PipelinePreset:
+    try:
+        return preset_by_id(
+            preset_id,
+            default_path=settings.pipeline_config,
+            preset_dir=settings.preset_dir,
+        )
+    except ValueError:
+        if custom_preset := _custom_readiness_preset(preset_id, settings.preset_dir):
+            return custom_preset
+        raise
+
+
+def _readiness_presets(args: argparse.Namespace, settings: Settings) -> list[PipelinePreset]:
+    requested = getattr(args, "preset", None)
+    if not requested:
+        return available_presets(settings.pipeline_config, settings.preset_dir)
+    return [_readiness_preset_by_id(preset_id, settings) for preset_id in requested]
 
 
 def process_file(args: argparse.Namespace) -> int:
@@ -128,7 +193,11 @@ def readiness(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
     blocked = 0
-    presets = available_presets(settings.pipeline_config, settings.preset_dir)
+    try:
+        presets = _readiness_presets(args, settings)
+    except ValueError as exc:
+        print(f"Readiness config failed: {exc}", file=sys.stderr)
+        return 2
 
     for preset in presets:
         messages = _readiness_messages(preset, settings)
@@ -226,6 +295,11 @@ def main() -> int:
     readiness_check = subparsers.add_parser(
         "readiness",
         help="Report which pipeline presets can run on this host.",
+    )
+    readiness_check.add_argument(
+        "--preset",
+        action="append",
+        help="Built-in or custom pipeline preset id to inspect. Can be provided more than once.",
     )
     readiness_check.add_argument(
         "--strict",

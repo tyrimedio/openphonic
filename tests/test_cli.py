@@ -473,6 +473,138 @@ def test_readiness_strict_returns_nonzero_for_blocked_presets(
     assert result == 2
 
 
+def test_readiness_can_filter_to_requested_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
+
+    result = readiness(argparse.Namespace(preset=["transcript-review"], strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] transcript-review - Transcript review" in captured.out
+    assert "Transcription is enabled, but faster-whisper is not installed." in captured.out
+    assert "podcast-default" not in captured.out
+    assert "speaker-diarization" not in captured.out
+
+
+def test_readiness_reports_unknown_requested_presets(
+    tmp_settings,
+    capsys,
+) -> None:
+    result = readiness(argparse.Namespace(preset=["missing"], strict=False))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Readiness config failed: Unknown pipeline preset: missing" in captured.err
+
+
+def test_readiness_reports_invalid_requested_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily.yml").write_text(
+        """
+name: daily
+stages:
+  intro_outro:
+    enabled: true
+    intro_path: missing-intro.wav
+""",
+        encoding="utf-8",
+    )
+
+    result = readiness(argparse.Namespace(preset=["custom:daily"], strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] custom:daily - Daily" in captured.out
+    assert "Intro/outro intro_path does not exist:" in captured.out
+    assert "Readiness config failed:" not in captured.err
+
+
+def test_readiness_reports_malformed_requested_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily.yml").write_text("name: [", encoding="utf-8")
+
+    result = readiness(argparse.Namespace(preset=["custom:daily"], strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] custom:daily - Daily" in captured.out
+    assert "Preset config could not be inspected:" in captured.out
+    assert "Readiness config failed:" not in captured.err
+
+
+def test_readiness_reports_schema_invalid_requested_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "bad.yml").write_text(
+        """
+name: bad
+stages:
+  loudness: true
+""",
+        encoding="utf-8",
+    )
+
+    result = readiness(argparse.Namespace(preset=["custom:bad"], strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] custom:bad - Bad" in captured.out
+    assert "Preset stage 'loudness' must be a mapping." in captured.out
+    assert "Readiness config failed:" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("[]", "Preset config must be a mapping."),
+        ("false", "Preset config must be a mapping."),
+        ("stages: []", "Preset stages must be a mapping."),
+    ],
+)
+def test_readiness_reports_raw_schema_invalid_requested_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+    content,
+    message,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "bad.yml").write_text(content, encoding="utf-8")
+
+    result = readiness(argparse.Namespace(preset=["custom:bad"], strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "[blocked] custom:bad - Bad" in captured.out
+    assert message in captured.out
+    assert "Readiness config failed:" not in captured.err
+
+
 def test_readiness_lists_custom_presets(
     tmp_settings,
     monkeypatch,

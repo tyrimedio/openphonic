@@ -102,8 +102,16 @@ openphonic readiness
 ```
 
 The report marks each preset as `ready` or `blocked` and prints missing local
-tools, Python packages, tokens, or configured assets. Use `--strict` when you
-want setup automation to fail if any advertised preset is blocked:
+tools, Python packages, tokens, or configured assets. Limit the report to one
+or more presets when you are preparing a specific real-audio run:
+
+```bash
+openphonic readiness --preset transcript-review
+openphonic readiness --preset speech-cleanup --preset speaker-diarization
+```
+
+Use `--strict` when you want setup automation to fail if any reported preset is
+blocked:
 
 ```bash
 openphonic readiness --strict
