@@ -60,14 +60,14 @@ def _configured_output_suffix(config: PipelineConfig) -> str:
     return f".{container}" if container else ".m4a"
 
 
-def _load_smoke_config(args: argparse.Namespace, settings: Settings) -> PipelineConfig:
-    if args.preset:
+def _load_pipeline_config(args: argparse.Namespace, settings: Settings) -> PipelineConfig:
+    if getattr(args, "preset", None):
         return load_pipeline_config_for_preset(
             args.preset,
             default_path=settings.pipeline_config,
             preset_dir=settings.preset_dir,
         )
-    return PipelineConfig.from_path(Path(args.config or settings.pipeline_config))
+    return PipelineConfig.from_path(Path(getattr(args, "config", None) or settings.pipeline_config))
 
 
 def _core_media_messages() -> list[str]:
@@ -91,12 +91,27 @@ def _readiness_messages(preset: PipelinePreset, settings: Settings) -> list[str]
 def process_file(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
-    config_path = Path(args.config or settings.pipeline_config)
+    try:
+        config = _load_pipeline_config(args, settings)
+    except (OSError, TypeError, ValueError, yaml.YAMLError) as exc:
+        print(f"Process config failed: {exc}", file=sys.stderr)
+        return 2
+    try:
+        preflight_issues = pipeline_preflight_issues(config, settings)
+    except (TypeError, ValueError, AttributeError) as exc:
+        print(f"Process preflight failed: {exc}", file=sys.stderr)
+        return 2
+    if preflight_issues:
+        print(
+            f"Process preflight failed: {format_preflight_issues(preflight_issues)}",
+            file=sys.stderr,
+        )
+        return 2
+
     output_path = Path(args.output).expanduser().resolve()
     work_dir = Path(args.work_dir or output_path.with_suffix("")).expanduser().resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    config = PipelineConfig.from_path(config_path)
     result = PipelineRunner(config, command_log_path=work_dir / "commands.jsonl").run(
         Path(args.input).expanduser().resolve(),
         work_dir,
@@ -134,8 +149,8 @@ def smoke_test(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
     try:
-        config = _load_smoke_config(args, settings)
-    except (OSError, TypeError, ValueError) as exc:
+        config = _load_pipeline_config(args, settings)
+    except (OSError, TypeError, ValueError, yaml.YAMLError) as exc:
         print(f"Smoke test config failed: {exc}", file=sys.stderr)
         return 2
     preflight_issues = pipeline_preflight_issues(config, settings)
@@ -179,7 +194,9 @@ def main() -> int:
     process = subparsers.add_parser("process", help="Process a single audio file.")
     process.add_argument("input", help="Input audio/video file.")
     process.add_argument("--output", required=True, help="Output media path.")
-    process.add_argument("--config", help="Pipeline config path.")
+    process_config = process.add_mutually_exclusive_group()
+    process_config.add_argument("--config", help="Pipeline config path.")
+    process_config.add_argument("--preset", help="Built-in or custom pipeline preset id.")
     process.add_argument("--work-dir", help="Directory for intermediate files.")
     process.set_defaults(func=process_file)
 
