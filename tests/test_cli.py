@@ -118,3 +118,56 @@ def test_smoke_test_uses_data_dir_defaults(tmp_settings, monkeypatch) -> None:
 
     assert result == 0
     assert (tmp_settings / "smoke-test" / "processed.m4a").read_bytes() == b"processed"
+
+
+def test_smoke_test_uses_configured_container_for_default_output(
+    tmp_path,
+    tmp_settings,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "smoke-wav.yml"
+    config_path.write_text(
+        """
+name: smoke-wav
+target:
+  codec: pcm_s16le
+  container: wav
+stages:
+  loudness:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+
+    def fake_run_command(args: list[str], cwd=None, log_path=None) -> subprocess.CompletedProcess:
+        _ = cwd, log_path
+        Path(args[-1]).write_bytes(b"input")
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    class FakeRunner:
+        def __init__(self, config, command_log_path: Path | None = None) -> None:
+            assert config.target.container == "wav"
+            _ = command_log_path
+
+        def run(self, input_path: Path, work_dir: Path):
+            _ = input_path
+            output_path = work_dir / "final.wav"
+            output_path.write_bytes(b"wav-bytes")
+            return SimpleNamespace(output_path=output_path, artifacts={})
+
+    monkeypatch.setattr("openphonic.cli.run_command", fake_run_command)
+    monkeypatch.setattr("openphonic.cli.PipelineRunner", FakeRunner)
+
+    result = smoke_test(
+        argparse.Namespace(
+            output=None,
+            config=str(config_path),
+            work_dir=None,
+            duration=1.0,
+            frequency=1000,
+        )
+    )
+
+    assert result == 0
+    assert (tmp_settings / "smoke-test" / "processed.wav").read_bytes() == b"wav-bytes"
+    assert not (tmp_settings / "smoke-test" / "processed.m4a").exists()
