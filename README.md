@@ -38,6 +38,17 @@ cp .env.example .env
 openphonic process ./sample.wav --output ./processed.m4a
 ```
 
+Use a built-in or custom preset when you want to run real audio through the
+same pipeline configuration exposed by the uploader:
+
+```bash
+openphonic process ./sample.wav --preset transcript-review --output ./processed.m4a
+openphonic process ./sample.wav --preset custom:daily-show --output ./processed.wav
+```
+
+`process` runs the same optional-stage preflight as uploads and smoke tests
+before creating work artifacts or starting the pipeline.
+
 Run the web app:
 
 ```bash

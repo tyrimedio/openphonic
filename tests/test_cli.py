@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openphonic.cli import readiness, smoke_test
+from openphonic.cli import process_file, readiness, smoke_test
 from openphonic.core.settings import get_settings
 
 
@@ -18,6 +18,141 @@ def tmp_settings(tmp_path, monkeypatch):
     get_settings.cache_clear()
     yield data_dir
     get_settings.cache_clear()
+
+
+def test_process_file_loads_custom_presets(
+    tmp_path,
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily-show.yml").write_text(
+        """
+name: daily-show
+target:
+  codec: pcm_s16le
+  container: wav
+stages:
+  loudness:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "sample.wav"
+    output_path = tmp_path / "out" / "processed.wav"
+    loaded: dict[str, object] = {}
+
+    class FakeRunner:
+        def __init__(self, config, command_log_path: Path | None = None) -> None:
+            loaded["name"] = config.name
+            loaded["container"] = config.target.container
+            loaded["command_log_path"] = command_log_path
+
+        def run(self, input_path_arg: Path, work_dir: Path):
+            loaded["input_path"] = input_path_arg
+            loaded["work_dir"] = work_dir
+            output = work_dir / "final.wav"
+            output.write_bytes(b"preset-output")
+            return SimpleNamespace(output_path=output, artifacts={"final_audio": output})
+
+    monkeypatch.setattr("openphonic.cli.PipelineRunner", FakeRunner)
+
+    result = process_file(
+        argparse.Namespace(
+            input=str(input_path),
+            output=str(output_path),
+            config=None,
+            preset="custom:daily-show",
+            work_dir=None,
+        )
+    )
+
+    assert result == 0
+    assert loaded == {
+        "name": "daily-show",
+        "container": "wav",
+        "command_log_path": output_path.with_suffix("") / "commands.jsonl",
+        "input_path": input_path.resolve(),
+        "work_dir": output_path.with_suffix(""),
+    }
+    assert output_path.read_bytes() == b"preset-output"
+    assert "Processed audio:" in capsys.readouterr().out
+
+
+def test_process_file_reports_unknown_presets_before_work(
+    tmp_path,
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    output_path = tmp_path / "out" / "processed.m4a"
+
+    class FailRunner:
+        def __init__(self, config, command_log_path: Path | None = None) -> None:
+            _ = config, command_log_path
+            raise AssertionError("pipeline should not run after config failure")
+
+    monkeypatch.setattr("openphonic.cli.PipelineRunner", FailRunner)
+
+    result = process_file(
+        argparse.Namespace(
+            input=str(tmp_path / "sample.wav"),
+            output=str(output_path),
+            config=None,
+            preset="missing",
+            work_dir=str(tmp_path / "work"),
+        )
+    )
+
+    assert result == 2
+    assert "Process config failed: Unknown pipeline preset: missing" in capsys.readouterr().err
+    assert not (tmp_path / "work").exists()
+    assert not output_path.exists()
+
+
+def test_process_file_preflights_before_work(
+    tmp_path,
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "missing-intro.yml"
+    config_path.write_text(
+        """
+name: missing-intro
+stages:
+  intro_outro:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "out" / "processed.m4a"
+
+    class FailRunner:
+        def __init__(self, config, command_log_path: Path | None = None) -> None:
+            _ = config, command_log_path
+            raise AssertionError("pipeline should not run after preflight failure")
+
+    monkeypatch.setattr("openphonic.cli.PipelineRunner", FailRunner)
+
+    result = process_file(
+        argparse.Namespace(
+            input=str(tmp_path / "sample.wav"),
+            output=str(output_path),
+            config=str(config_path),
+            preset=None,
+            work_dir=str(tmp_path / "work"),
+        )
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Process preflight failed:" in captured.err
+    assert "Intro/outro insertion requires intro_path or outro_path." in captured.err
+    assert not (tmp_path / "work").exists()
+    assert not output_path.exists()
 
 
 def test_smoke_test_generates_input_and_copies_output(
