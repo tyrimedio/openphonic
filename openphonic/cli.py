@@ -10,6 +10,7 @@ import yaml
 from openphonic.core.logging import configure_logging
 from openphonic.core.settings import Settings, get_settings
 from openphonic.pipeline.config import (
+    CUSTOM_PRESET_ID,
     PipelineConfig,
     PipelinePreset,
     available_presets,
@@ -89,18 +90,45 @@ def _readiness_messages(preset: PipelinePreset, settings: Settings) -> list[str]
     return messages
 
 
-def _readiness_presets(args: argparse.Namespace, settings: Settings) -> list[PipelinePreset]:
-    requested = getattr(args, "preset", None)
-    if not requested:
-        return available_presets(settings.pipeline_config, settings.preset_dir)
-    return [
-        preset_by_id(
+def _custom_readiness_preset(preset_id: str, preset_dir: Path) -> PipelinePreset | None:
+    prefix = "custom:"
+    if not preset_id.startswith(prefix):
+        return None
+    stem = preset_id.removeprefix(prefix)
+    if not CUSTOM_PRESET_ID.fullmatch(stem):
+        return None
+
+    directory = Path(preset_dir).expanduser()
+    for path in (directory / f"{stem}.yml", directory / f"{stem}.yaml"):
+        if path.is_file():
+            label = stem.replace("_", " ").replace("-", " ").strip().title() or stem
+            return PipelinePreset(
+                id=preset_id,
+                label=label,
+                description=f"Custom preset from {path.name}.",
+                path=path,
+            )
+    return None
+
+
+def _readiness_preset_by_id(preset_id: str, settings: Settings) -> PipelinePreset:
+    try:
+        return preset_by_id(
             preset_id,
             default_path=settings.pipeline_config,
             preset_dir=settings.preset_dir,
         )
-        for preset_id in requested
-    ]
+    except ValueError:
+        if custom_preset := _custom_readiness_preset(preset_id, settings.preset_dir):
+            return custom_preset
+        raise
+
+
+def _readiness_presets(args: argparse.Namespace, settings: Settings) -> list[PipelinePreset]:
+    requested = getattr(args, "preset", None)
+    if not requested:
+        return available_presets(settings.pipeline_config, settings.preset_dir)
+    return [_readiness_preset_by_id(preset_id, settings) for preset_id in requested]
 
 
 def process_file(args: argparse.Namespace) -> int:

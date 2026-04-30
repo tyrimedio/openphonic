@@ -503,6 +503,53 @@ def test_readiness_reports_unknown_requested_presets(
     assert "Readiness config failed: Unknown pipeline preset: missing" in captured.err
 
 
+def test_readiness_reports_invalid_requested_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily.yml").write_text(
+        """
+name: daily
+stages:
+  intro_outro:
+    enabled: true
+    intro_path: missing-intro.wav
+""",
+        encoding="utf-8",
+    )
+
+    result = readiness(argparse.Namespace(preset=["custom:daily"], strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] custom:daily - Daily" in captured.out
+    assert "Intro/outro intro_path does not exist:" in captured.out
+    assert "Readiness config failed:" not in captured.err
+
+
+def test_readiness_reports_malformed_requested_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily.yml").write_text("name: [", encoding="utf-8")
+
+    result = readiness(argparse.Namespace(preset=["custom:daily"], strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] custom:daily - Daily" in captured.out
+    assert "Preset config could not be inspected:" in captured.out
+    assert "Readiness config failed:" not in captured.err
+
+
 def test_readiness_lists_custom_presets(
     tmp_settings,
     monkeypatch,
