@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from openphonic.cli import inspect_transcript, process_file, readiness, smoke_test
+from openphonic.cli import (
+    inspect_diarization,
+    inspect_transcript,
+    process_file,
+    readiness,
+    smoke_test,
+)
 from openphonic.core.settings import get_settings
 
 
@@ -341,6 +347,127 @@ def test_inspect_transcript_rejects_invalid_artifacts(
     assert result == 2
     assert (
         "Transcript inspection failed: transcript must be a JSON object." in capsys.readouterr().err
+    )
+
+
+def test_inspect_diarization_reports_speaker_summary(
+    tmp_path,
+    capsys,
+) -> None:
+    diarization_path = tmp_path / "diarization.json"
+    diarization_path.write_text(
+        """
+{
+  "engine": "pyannote.audio",
+  "model": "pyannote/test-diarization",
+  "speaker_count": 2,
+  "segments": [
+    {"start": 0.0, "end": 0.8, "speaker": "SPEAKER_00", "track": "A"},
+    {"start": 1.0, "end": 1.5, "speaker": "SPEAKER_01", "track": "B"}
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_diarization(
+        argparse.Namespace(diarization=str(diarization_path), duration=2.0, strict=False)
+    )
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Diarization: {diarization_path.resolve()}" in captured.out
+    assert "Engine: pyannote.audio" in captured.out
+    assert "Model: pyannote/test-diarization" in captured.out
+    assert "Declared speakers: 2" in captured.out
+    assert "Detected speakers: 2" in captured.out
+    assert "Segments: 2" in captured.out
+    assert "Timed segments: 2/2" in captured.out
+    assert "Total speaker time: 1.300s" in captured.out
+    assert "Warnings:" not in captured.out
+
+
+def test_inspect_diarization_strict_fails_on_invalid_segments(
+    tmp_path,
+    capsys,
+) -> None:
+    diarization_path = tmp_path / "diarization.json"
+    diarization_path.write_text(
+        """
+{
+  "speaker_count": 3,
+  "segments": [
+    {"start": -0.1, "end": 0.2, "speaker": "SPEAKER_00"},
+    {"start": 0.3, "end": 2.1, "speaker": ""},
+    {"start": "nan", "end": 0.5, "speaker": "SPEAKER_01"},
+    []
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_diarization(
+        argparse.Namespace(diarization=str(diarization_path), duration=2.0, strict=True)
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Declared speakers: 3" in captured.out
+    assert "Detected speakers: 2" in captured.out
+    assert "Segments: 4" in captured.out
+    assert "Timed segments: 0/4" in captured.out
+    assert "Segment 3 is not an object." in captured.out
+    assert "Diarization speaker_count does not match detected speaker labels (3 != 2)." in (
+        captured.out
+    )
+    assert "2 diarization segment(s) have no speaker label." in captured.out
+    assert "4 diarization segment timing value(s) are invalid." in captured.out
+
+
+def test_inspect_diarization_handles_overflowing_timestamp_values(
+    tmp_path,
+    capsys,
+) -> None:
+    huge_timestamp = "1" + ("0" * 1000)
+    diarization_path = tmp_path / "diarization.json"
+    diarization_path.write_text(
+        f"""
+{{
+  "segments": [
+    {{"start": 0.0, "end": {huge_timestamp}, "speaker": "SPEAKER_00"}}
+  ]
+}}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_diarization(
+        argparse.Namespace(diarization=str(diarization_path), duration=None, strict=True)
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Timed segments: 0/1" in captured.out
+    assert "1 diarization segment timing value(s) are invalid." in captured.out
+    assert "Traceback" not in captured.err
+
+
+def test_inspect_diarization_rejects_invalid_artifacts(
+    tmp_path,
+    capsys,
+) -> None:
+    diarization_path = tmp_path / "diarization.json"
+    diarization_path.write_text("[]", encoding="utf-8")
+
+    result = inspect_diarization(
+        argparse.Namespace(diarization=str(diarization_path), duration=None, strict=False)
+    )
+
+    assert result == 2
+    assert (
+        "Diarization inspection failed: diarization must be a JSON object."
+        in capsys.readouterr().err
     )
 
 

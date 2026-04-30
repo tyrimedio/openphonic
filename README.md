@@ -134,6 +134,23 @@ setup from a script:
 openphonic inspect-transcript ./data/jobs/<job-id>/transcript.json --strict
 ```
 
+## Diarization Inspection
+
+After running a speaker diarization preset, summarize the speaker artifact before
+reviewing labels or speaker exports:
+
+```bash
+openphonic inspect-diarization ./data/jobs/<job-id>/diarization.json
+```
+
+The command reports declared and detected speaker counts, segment timing
+coverage, and total speaker time. Use `--duration` to validate turns against the
+source audio length, and `--strict` when setup scripts should fail on warnings:
+
+```bash
+openphonic inspect-diarization ./data/jobs/<job-id>/diarization.json --duration 3600 --strict
+```
+
 ## Docker
 
 ```bash
