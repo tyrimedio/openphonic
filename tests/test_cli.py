@@ -825,6 +825,54 @@ def test_inspect_job_keeps_raw_relative_path_fallback_for_symlinked_data(
     assert "Warnings:" not in captured.out
 
 
+def test_inspect_job_ignores_raw_relative_paths_when_manifest_base_exists(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_dir = tmp_path / "project"
+    work_dir = project_dir / "data" / "jobs" / "job-1"
+    upload_dir = project_dir / "data" / "uploads" / "job-1"
+    stale_cwd = tmp_path / "elsewhere"
+    stale_job_dir = stale_cwd / "data" / "jobs" / "job-1"
+    work_dir.mkdir(parents=True)
+    upload_dir.mkdir(parents=True)
+    stale_job_dir.mkdir(parents=True)
+    input_path = upload_dir / "input.wav"
+    output_path = work_dir / "processed.m4a"
+    metadata_path = work_dir / "00_media_metadata.json"
+    input_path.write_bytes(b"input")
+    (stale_job_dir / "processed.m4a").write_bytes(b"stale-output")
+    (stale_job_dir / "00_media_metadata.json").write_text("{}", encoding="utf-8")
+    (work_dir / "pipeline_manifest.json").write_text(
+        json.dumps(
+            {
+                "created_at": "2026-04-30T00:00:00+00:00",
+                "status": "succeeded",
+                "pipeline_name": "podcast-default",
+                "input_path": "data/uploads/job-1/input.wav",
+                "work_dir": "data/jobs/job-1",
+                "output_path": "data/jobs/job-1/processed.m4a",
+                "artifacts": {
+                    "final_audio": "data/jobs/job-1/processed.m4a",
+                    "media_metadata": "data/jobs/job-1/00_media_metadata.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(stale_cwd)
+
+    result = inspect_job(argparse.Namespace(work_dir=str(work_dir.resolve()), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert f"Pipeline output is missing: {output_path}" in captured.out
+    assert f"Pipeline artifact final_audio is missing: {output_path}" in captured.out
+    assert f"Pipeline artifact media_metadata is missing: {metadata_path}" in captured.out
+    assert "Artifacts: 0/2 present" in captured.out
+
+
 def test_inspect_job_strict_fails_on_missing_paths(
     tmp_path,
     capsys,
