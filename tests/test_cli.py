@@ -63,6 +63,7 @@ def test_smoke_test_generates_input_and_copies_output(
         argparse.Namespace(
             output=str(output_path),
             config=None,
+            preset=None,
             work_dir=None,
             duration=0.5,
             frequency=440,
@@ -110,6 +111,7 @@ def test_smoke_test_uses_data_dir_defaults(tmp_settings, monkeypatch) -> None:
         argparse.Namespace(
             output=None,
             config=None,
+            preset=None,
             work_dir=None,
             duration=1.0,
             frequency=1000,
@@ -162,6 +164,7 @@ stages:
         argparse.Namespace(
             output=None,
             config=str(config_path),
+            preset=None,
             work_dir=None,
             duration=1.0,
             frequency=1000,
@@ -171,3 +174,132 @@ stages:
     assert result == 0
     assert (tmp_settings / "smoke-test" / "processed.wav").read_bytes() == b"wav-bytes"
     assert not (tmp_settings / "smoke-test" / "processed.m4a").exists()
+
+
+def test_smoke_test_loads_custom_presets(
+    tmp_settings,
+    monkeypatch,
+) -> None:
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily-show.yml").write_text(
+        """
+name: daily-show
+target:
+  codec: pcm_s16le
+  container: wav
+stages:
+  loudness:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+    loaded: dict[str, str] = {}
+
+    def fake_run_command(args: list[str], cwd=None, log_path=None) -> subprocess.CompletedProcess:
+        _ = cwd, log_path
+        Path(args[-1]).write_bytes(b"input")
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    class FakeRunner:
+        def __init__(self, config, command_log_path: Path | None = None) -> None:
+            loaded["name"] = config.name
+            loaded["container"] = config.target.container
+            _ = command_log_path
+
+        def run(self, input_path: Path, work_dir: Path):
+            _ = input_path
+            output_path = work_dir / "final.wav"
+            output_path.write_bytes(b"preset-wav")
+            return SimpleNamespace(output_path=output_path, artifacts={})
+
+    monkeypatch.setattr("openphonic.cli.run_command", fake_run_command)
+    monkeypatch.setattr("openphonic.cli.PipelineRunner", FakeRunner)
+
+    result = smoke_test(
+        argparse.Namespace(
+            output=None,
+            config=None,
+            preset="custom:daily-show",
+            work_dir=None,
+            duration=1.0,
+            frequency=1000,
+        )
+    )
+
+    assert result == 0
+    assert loaded == {"name": "daily-show", "container": "wav"}
+    assert (tmp_settings / "smoke-test" / "processed.wav").read_bytes() == b"preset-wav"
+    assert not (tmp_settings / "smoke-test" / "processed.m4a").exists()
+
+
+def test_smoke_test_reports_unknown_presets_before_generating_input(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    def fail_run_command(args: list[str], cwd=None, log_path=None) -> subprocess.CompletedProcess:
+        _ = args, cwd, log_path
+        raise AssertionError("smoke input should not be generated after config failure")
+
+    monkeypatch.setattr("openphonic.cli.run_command", fail_run_command)
+
+    result = smoke_test(
+        argparse.Namespace(
+            output=None,
+            config=None,
+            preset="missing",
+            work_dir=None,
+            duration=1.0,
+            frequency=1000,
+        )
+    )
+
+    assert result == 2
+    assert "Smoke test config failed: Unknown pipeline preset: missing" in capsys.readouterr().err
+
+
+def test_smoke_test_preflights_before_generating_input(
+    tmp_path,
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "missing-intro.yml"
+    config_path.write_text(
+        """
+name: missing-intro
+stages:
+  intro_outro:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+
+    def fail_run_command(args: list[str], cwd=None, log_path=None) -> subprocess.CompletedProcess:
+        _ = args, cwd, log_path
+        raise AssertionError("smoke input should not be generated after preflight failure")
+
+    class FailRunner:
+        def __init__(self, config, command_log_path: Path | None = None) -> None:
+            _ = config, command_log_path
+            raise AssertionError("pipeline should not run after preflight failure")
+
+    monkeypatch.setattr("openphonic.cli.run_command", fail_run_command)
+    monkeypatch.setattr("openphonic.cli.PipelineRunner", FailRunner)
+
+    result = smoke_test(
+        argparse.Namespace(
+            output=None,
+            config=str(config_path),
+            preset=None,
+            work_dir=None,
+            duration=1.0,
+            frequency=1000,
+        )
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Smoke test preflight failed:" in captured.err
+    assert "Intro/outro insertion requires intro_path or outro_path." in captured.err

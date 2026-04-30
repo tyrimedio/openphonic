@@ -65,6 +65,18 @@ specific run:
 openphonic smoke-test --output ./processed-smoke.m4a --work-dir ./data/smoke-test/work
 ```
 
+You can run the same generated input through any built-in or custom preset:
+
+```bash
+openphonic smoke-test --preset transcript-review
+openphonic smoke-test --preset custom:daily-show
+```
+
+`smoke-test` runs the same optional-stage preflight used by the web uploader
+before generating input or starting the pipeline. If a selected preset needs
+missing local tools, Python packages, model tokens, or configured assets, the
+command exits before doing work and prints the setup issue.
+
 Use this as the first local verification pass after setup. If it fails, fix the
 FFmpeg/core pipeline path before testing transcription, diarization, denoise, or
 source separation.
