@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from openphonic.cli import (
+    inspect_cut_suggestions,
     inspect_diarization,
     inspect_transcript,
     process_file,
@@ -511,6 +512,169 @@ def test_inspect_diarization_rejects_invalid_artifacts(
     assert result == 2
     assert (
         "Diarization inspection failed: diarization must be a JSON object."
+        in capsys.readouterr().err
+    )
+
+
+def test_inspect_cut_suggestions_reports_review_summary(
+    tmp_path,
+    capsys,
+) -> None:
+    suggestions_path = tmp_path / "cut_suggestions.json"
+    suggestions_path.write_text(
+        """
+{
+  "status": "not_applied",
+  "reason": "Suggestions only; manual review is required before any cuts are applied.",
+  "source_artifact": "transcript.json",
+  "configured_words": ["um", "uh"],
+  "min_silence_seconds": 0.75,
+  "suggestion_count": 2,
+  "suggestions": [
+    {
+      "id": "cut-0001",
+      "type": "filler_word",
+      "start": 0.0,
+      "end": 0.2,
+      "duration": 0.2,
+      "text": "Um",
+      "reason": "Matched configured filler word."
+    },
+    {
+      "id": "cut-0002",
+      "type": "silence",
+      "start": 0.9,
+      "end": 1.8,
+      "duration": 0.9,
+      "source": "word_gap",
+      "reason": "Detected a timestamp gap longer than the configured threshold."
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_cut_suggestions(
+        argparse.Namespace(cut_suggestions=str(suggestions_path), duration=2.0, strict=False)
+    )
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Cut suggestions: {suggestions_path.resolve()}" in captured.out
+    assert "Status: not_applied" in captured.out
+    assert "Source artifact: transcript.json" in captured.out
+    assert "Configured words: um, uh" in captured.out
+    assert "Minimum silence: 0.750s" in captured.out
+    assert "Suggestions: 2" in captured.out
+    assert "Timed suggestions: 2/2" in captured.out
+    assert "Types: filler_word=1, silence=1" in captured.out
+    assert "Suggested duration: 1.100s" in captured.out
+    assert "Merged cut duration: 1.100s" in captured.out
+    assert "Warnings:" not in captured.out
+
+
+def test_inspect_cut_suggestions_strict_fails_on_invalid_suggestions(
+    tmp_path,
+    capsys,
+) -> None:
+    suggestions_path = tmp_path / "cut_suggestions.json"
+    suggestions_path.write_text(
+        """
+{
+  "status": "not_available",
+  "configured_words": ["um", ""],
+  "min_silence_seconds": -0.1,
+  "suggestion_count": 4,
+  "suggestions": [
+    {"id": "cut-0001", "type": "filler_word", "start": 0.0, "end": 0.2, "duration": 0.2},
+    {"id": "cut-0001", "type": "", "start": 1.0, "end": 0.5, "duration": 0.5},
+    {"type": "silence", "start": 2.0, "end": 2.5, "duration": 0.25},
+    []
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_cut_suggestions(
+        argparse.Namespace(cut_suggestions=str(suggestions_path), duration=3.0, strict=True)
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Status: not_available" in captured.out
+    assert "Suggestions: 4" in captured.out
+    assert "Timed suggestions: 1/4" in captured.out
+    assert "Types: filler_word=1, silence=1" in captured.out
+    assert "Cut suggestions are not ready for review: not_available." in captured.out
+    assert "Cut suggestions configured_words must be a list of non-empty strings." in (captured.out)
+    assert "Cut suggestions min_silence_seconds must be non-negative." in captured.out
+    assert "2 cut suggestion(s) have no id." in captured.out
+    assert "1 cut suggestion id(s) are duplicated." in captured.out
+    assert "2 cut suggestion(s) have no type." in captured.out
+    assert "2 cut suggestion timing value(s) are invalid." in captured.out
+    assert "1 cut suggestion duration value(s) do not match start/end." in captured.out
+
+
+def test_inspect_cut_suggestions_reports_invalid_utf8(
+    tmp_path,
+    capsys,
+) -> None:
+    suggestions_path = tmp_path / "cut_suggestions.json"
+    suggestions_path.write_bytes(b"\xff")
+
+    result = inspect_cut_suggestions(
+        argparse.Namespace(cut_suggestions=str(suggestions_path), duration=None, strict=False)
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Cut suggestion inspection failed: invalid UTF-8:" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_inspect_cut_suggestions_reports_json_value_errors(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    suggestions_path = tmp_path / "cut_suggestions.json"
+    suggestions_path.write_text('{"suggestions": []}', encoding="utf-8")
+
+    def raise_value_error(text: str) -> None:
+        _ = text
+        raise ValueError("exceeds the limit for integer string conversion")
+
+    monkeypatch.setattr("openphonic.cli.json.loads", raise_value_error)
+
+    result = inspect_cut_suggestions(
+        argparse.Namespace(cut_suggestions=str(suggestions_path), duration=None, strict=False)
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert (
+        "Cut suggestion inspection failed: invalid JSON: "
+        "exceeds the limit for integer string conversion"
+    ) in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_inspect_cut_suggestions_rejects_invalid_artifacts(
+    tmp_path,
+    capsys,
+) -> None:
+    suggestions_path = tmp_path / "cut_suggestions.json"
+    suggestions_path.write_text("[]", encoding="utf-8")
+
+    result = inspect_cut_suggestions(
+        argparse.Namespace(cut_suggestions=str(suggestions_path), duration=None, strict=False)
+    )
+
+    assert result == 2
+    assert (
+        "Cut suggestion inspection failed: cut suggestions must be a JSON object."
         in capsys.readouterr().err
     )
 
