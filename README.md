@@ -2,7 +2,7 @@
 
 Openphonic is a small-scale, self-hosted audio post-production platform inspired by Auphonic. It is designed for a single team or a handful of users first, with a clear path to heavier model-based processing when you want it.
 
-The default pipeline is intentionally FFmpeg-first so the app is useful before you install GPU-sized dependencies. Optional stages are provided for Whisper/faster-whisper transcription, pyannote diarization, DeepFilterNet noise reduction, and Demucs source separation.
+The default pipeline is intentionally FFmpeg-first so the app is useful before you install GPU-sized dependencies. Optional stages are provided for Whisper/faster-whisper or Deepgram transcription, pyannote or Deepgram diarization, DeepFilterNet noise reduction, and Demucs source separation.
 
 ## What This Initial Version Includes
 
@@ -11,7 +11,7 @@ The default pipeline is intentionally FFmpeg-first so the app is useful before y
 - Local filesystem storage under `data/`
 - Config-driven audio pipeline
 - FFprobe media validation plus FFmpeg ingest, silence trimming, and two-pass loudness normalization
-- Optional adapters for faster-whisper, pyannote, DeepFilterNet CLI, and Demucs
+- Optional adapters for faster-whisper, Deepgram, pyannote, DeepFilterNet CLI, and Demucs
 - Docker and Docker Compose
 - CLI entry point for processing one file without the web app
 - Tests for media command builders, pipeline config, job transitions, storage behavior, and API routes
@@ -245,12 +245,15 @@ CPU VPS running Openphonic with Docker Compose
   +--> hosted ASR/diarization provider adapter
 ```
 
-The selected future provider path is Deepgram Nova-3 for hosted transcription
-and diarization. The config keys `TRANSCRIPTION_PROVIDER` and
-`DEEPGRAM_API_KEY` exist so deployment files can be prepared, but
-`TRANSCRIPTION_PROVIDER=deepgram` is intentionally blocked by preflight until
-the adapter lands. Current releases still use local `faster-whisper` and
-`pyannote.audio` when ML presets are enabled.
+The selected hosted provider path is Deepgram Nova-3 for transcription and
+diarization. Local processing remains the default. To use the hosted provider,
+set `TRANSCRIPTION_PROVIDER=deepgram`, `DEEPGRAM_API_KEY`, and optionally
+`OPENPHONIC_DEEPGRAM_MODEL=nova-3`. In Deepgram mode, transcription posts the
+processed audio to Deepgram's pre-recorded `/v1/listen` API with smart
+formatting and utterances enabled. When the selected preset enables
+diarization, speaker labels are requested in the same Deepgram call and written
+to Openphonic's existing `diarization.json` and RTTM artifacts instead of
+running local pyannote.
 
 The intended v1 hosted security boundary is Cloudflare Access in front of the
 whole app, not per-user accounts inside Openphonic. The app should continue to
@@ -268,9 +271,10 @@ The default preset lives in [config/default.yml](config/default.yml). It runs:
 5. Optional silence trimming
 6. Optional intro/outro insertion from local media
 7. FFmpeg two-pass loudness normalization
-8. Optional faster-whisper transcription
+8. Optional faster-whisper or Deepgram transcription
 9. Optional non-destructive cut suggestions from transcript timestamps
-10. Optional pyannote diarization
+10. Optional pyannote diarization, or Deepgram speaker labels when
+    `TRANSCRIPTION_PROVIDER=deepgram`
 
 The optional ML stages are disabled by default because their install/runtime requirements differ by machine.
 
@@ -325,10 +329,13 @@ Transcription uses `faster-whisper` and stores `transcript.json` plus `transcrip
 When `stages.filler_removal.enabled` is true, Openphonic writes
 `cut_suggestions.json` from transcript word and timing gaps, but does not apply
 cuts. Manual review is required before destructive edits are safe.
-Diarization uses `pyannote.audio`, requires `HF_TOKEN` for common pretrained Hugging
-Face pipelines such as `pyannote/speaker-diarization-3.1`, and stores both
-`diarization.rttm` and `diarization.json`. Check the selected model license and
-expected CPU/GPU runtime before enabling these stages for production jobs.
+Diarization uses `pyannote.audio` in local provider mode, requires `HF_TOKEN`
+for common pretrained Hugging Face pipelines such as
+`pyannote/speaker-diarization-3.1`, and stores both `diarization.rttm` and
+`diarization.json`. In Deepgram provider mode, diarization is requested during
+transcription and the local pyannote dependency is not required. Check the
+selected model license, provider cost, privacy posture, and expected runtime
+before enabling these stages for production jobs.
 
 ## Scaling Notes
 
@@ -340,7 +347,8 @@ provider adapter so non-technical users do not manage local ML dependencies.
 
 The main changes before public multi-user hosting are:
 
-- Add the optional Deepgram transcription/diarization provider adapter
+- Harden the optional Deepgram transcription/diarization provider adapter with
+  remote readiness checks and hosted deployment docs
 - Keep local `faster-whisper` and `pyannote.audio` paths intact behind a local
   provider mode
 - Document Cloudflare Tunnel + Access deployment and backup setup

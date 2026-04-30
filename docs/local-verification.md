@@ -129,12 +129,12 @@ diagnostics. Failed jobs should remain inspectable and retryable.
 
 Only start this after the FFmpeg-only smoke and web checks pass.
 
-This section covers the current local ML path. The planned hosted deployment
-will use an optional Deepgram provider adapter for transcription and diarization
-instead of requiring non-technical users to run `faster-whisper` or
-`pyannote.audio` locally. Until that adapter exists, keep hosted-provider
-environment variables out of production config and use the readiness checks below
-to confirm local ML dependencies are either available or clearly blocked.
+This section covers the local ML path. Hosted transcription and diarization can
+also run through the optional Deepgram provider by setting
+`TRANSCRIPTION_PROVIDER=deepgram` and `DEEPGRAM_API_KEY`, but that path makes a
+paid external API call when a transcription preset actually runs. Keep local
+verification on `TRANSCRIPTION_PROVIDER=local` unless you intentionally want to
+test the hosted provider with a real key.
 
 ```bash
 pip install -e ".[dev,ml]"

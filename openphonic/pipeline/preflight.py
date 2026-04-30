@@ -20,7 +20,6 @@ def pipeline_preflight_issues(
 ) -> list[PipelinePreflightIssue]:
     settings = settings or get_settings()
     issues: list[PipelinePreflightIssue] = []
-    deepgram_provider_checked = False
 
     if config.enabled("noise_reduction"):
         if not _binary_available(settings.deepfilternet_bin):
@@ -68,7 +67,6 @@ def pipeline_preflight_issues(
     if config.enabled("transcription"):
         if settings.transcription_provider == "deepgram":
             issues.extend(_deepgram_transcription_issues(settings))
-            deepgram_provider_checked = True
         elif not _module_available("faster_whisper"):
             issues.append(
                 PipelinePreflightIssue(
@@ -103,7 +101,7 @@ def pipeline_preflight_issues(
                         ),
                     )
                 )
-            if not deepgram_provider_checked:
+            if not config.enabled("transcription"):
                 issues.extend(_deepgram_transcription_issues(settings))
         else:
             if not settings.hf_token:
@@ -136,16 +134,6 @@ def _deepgram_transcription_issues(settings: Settings) -> list[PipelinePreflight
                 message="Deepgram transcription provider requires DEEPGRAM_API_KEY.",
             )
         )
-    issues.append(
-        PipelinePreflightIssue(
-            stage="transcription",
-            message=(
-                "Deepgram transcription provider is configured, but the Deepgram adapter "
-                "is not implemented yet. Use TRANSCRIPTION_PROVIDER=local until the "
-                "adapter lands."
-            ),
-        )
-    )
     return issues
 
 
