@@ -20,6 +20,7 @@ def pipeline_preflight_issues(
 ) -> list[PipelinePreflightIssue]:
     settings = settings or get_settings()
     issues: list[PipelinePreflightIssue] = []
+    deepgram_provider_checked = False
 
     if config.enabled("noise_reduction"):
         if not _binary_available(settings.deepfilternet_bin):
@@ -64,16 +65,20 @@ def pipeline_preflight_issues(
     if config.enabled("intro_outro"):
         issues.extend(_intro_outro_issues(config))
 
-    if config.enabled("transcription") and not _module_available("faster_whisper"):
-        issues.append(
-            PipelinePreflightIssue(
-                stage="transcription",
-                message=(
-                    "Transcription is enabled, but faster-whisper is not installed. "
-                    'Install with pip install -e ".[ml]" or disable stages.transcription.'
-                ),
+    if config.enabled("transcription"):
+        if settings.transcription_provider == "deepgram":
+            issues.extend(_deepgram_transcription_issues(settings))
+            deepgram_provider_checked = True
+        elif not _module_available("faster_whisper"):
+            issues.append(
+                PipelinePreflightIssue(
+                    stage="transcription",
+                    message=(
+                        "Transcription is enabled, but faster-whisper is not installed. "
+                        'Install with pip install -e ".[ml]" or disable stages.transcription.'
+                    ),
+                )
             )
-        )
 
     if config.enabled("filler_removal") and not config.enabled("transcription"):
         issues.append(
@@ -87,24 +92,60 @@ def pipeline_preflight_issues(
         )
 
     if config.enabled("diarization"):
-        if not settings.hf_token:
-            issues.append(
-                PipelinePreflightIssue(
-                    stage="diarization",
-                    message="Diarization requires HF_TOKEN for pyannote pretrained pipelines.",
+        if settings.transcription_provider == "deepgram":
+            if not config.enabled("transcription"):
+                issues.append(
+                    PipelinePreflightIssue(
+                        stage="diarization",
+                        message=(
+                            "Deepgram diarization must run through stages.transcription; "
+                            "enable stages.transcription before stages.diarization."
+                        ),
+                    )
                 )
-            )
-        if not _module_available("pyannote.audio"):
-            issues.append(
-                PipelinePreflightIssue(
-                    stage="diarization",
-                    message=(
-                        "Diarization is enabled, but pyannote.audio is not installed. "
-                        'Install with pip install -e ".[ml]" or disable stages.diarization.'
-                    ),
+            if not deepgram_provider_checked:
+                issues.extend(_deepgram_transcription_issues(settings))
+        else:
+            if not settings.hf_token:
+                issues.append(
+                    PipelinePreflightIssue(
+                        stage="diarization",
+                        message="Diarization requires HF_TOKEN for pyannote pretrained pipelines.",
+                    )
                 )
-            )
+            if not _module_available("pyannote.audio"):
+                issues.append(
+                    PipelinePreflightIssue(
+                        stage="diarization",
+                        message=(
+                            "Diarization is enabled, but pyannote.audio is not installed. "
+                            'Install with pip install -e ".[ml]" or disable stages.diarization.'
+                        ),
+                    )
+                )
 
+    return issues
+
+
+def _deepgram_transcription_issues(settings: Settings) -> list[PipelinePreflightIssue]:
+    issues: list[PipelinePreflightIssue] = []
+    if not settings.deepgram_api_key:
+        issues.append(
+            PipelinePreflightIssue(
+                stage="transcription",
+                message="Deepgram transcription provider requires DEEPGRAM_API_KEY.",
+            )
+        )
+    issues.append(
+        PipelinePreflightIssue(
+            stage="transcription",
+            message=(
+                "Deepgram transcription provider is configured, but the Deepgram adapter "
+                "is not implemented yet. Use TRANSCRIPTION_PROVIDER=local until the "
+                "adapter lands."
+            ),
+        )
+    )
     return issues
 
 

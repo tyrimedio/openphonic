@@ -20,7 +20,18 @@ def _env_int(name: str, default: int) -> int:
     return default if value in (None, "") else int(value)
 
 
+def _env_choice(name: str, default: str, choices: set[str]) -> str:
+    value = (os.getenv(name) or default).strip().lower()
+    if not value:
+        value = default
+    if value not in choices:
+        allowed = ", ".join(sorted(choices))
+        raise ValueError(f"{name} must be one of: {allowed}.")
+    return value
+
+
 DEFAULT_PIPELINE_CONFIG = Path(__file__).resolve().parents[1] / "config" / "default.yml"
+TRANSCRIPTION_PROVIDERS = {"deepgram", "local"}
 
 
 @dataclass(frozen=True)
@@ -37,6 +48,8 @@ class Settings:
     whisper_device: str
     pyannote_model: str
     deepfilternet_bin: str
+    transcription_provider: str = "local"
+    deepgram_api_key: str | None = None
 
     @property
     def uploads_dir(self) -> Path:
@@ -69,4 +82,10 @@ def get_settings() -> Settings:
             "pyannote/speaker-diarization-3.1",
         ),
         deepfilternet_bin=os.getenv("OPENPHONIC_DEEPFILTERNET_BIN", "deepFilter"),
+        transcription_provider=_env_choice(
+            "TRANSCRIPTION_PROVIDER",
+            "local",
+            TRANSCRIPTION_PROVIDERS,
+        ),
+        deepgram_api_key=os.getenv("DEEPGRAM_API_KEY") or None,
     )

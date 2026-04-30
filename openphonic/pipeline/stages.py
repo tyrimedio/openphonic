@@ -280,6 +280,12 @@ class TranscriptionStage(PipelineStage):
     def run(self, input_path: Path, work_dir: Path) -> dict[str, Path]:
         stage = self.config.stage("transcription")
         settings = get_settings()
+        if settings.transcription_provider == "deepgram":
+            raise StageError(
+                "Deepgram transcription provider is configured, but the Deepgram adapter "
+                "is not implemented yet. Use TRANSCRIPTION_PROVIDER=local until the "
+                "adapter lands."
+            )
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
@@ -323,6 +329,12 @@ class DiarizationStage(PipelineStage):
     def run(self, input_path: Path, work_dir: Path) -> dict[str, Path]:
         stage = self.config.stage("diarization")
         settings = get_settings()
+        if settings.transcription_provider == "deepgram":
+            raise StageError(
+                "Deepgram diarization must run through the transcription provider, but "
+                "the Deepgram adapter is not implemented yet. Use TRANSCRIPTION_PROVIDER=local "
+                "until the adapter lands."
+            )
         if not settings.hf_token:
             raise StageError("Diarization requires HF_TOKEN for pyannote pretrained pipelines.")
         try:

@@ -156,3 +156,19 @@ def test_diarization_stage_requires_hugging_face_token(tmp_path, monkeypatch) ->
             DiarizationStage(PipelineConfig(name="test")).run(input_path, tmp_path)
     finally:
         get_settings.cache_clear()
+
+
+def test_diarization_stage_rejects_unimplemented_deepgram_provider(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "deepgram")
+    get_settings.cache_clear()
+
+    try:
+        with pytest.raises(StageError, match="Deepgram diarization"):
+            DiarizationStage(PipelineConfig(name="test")).run(input_path, tmp_path)
+    finally:
+        get_settings.cache_clear()
