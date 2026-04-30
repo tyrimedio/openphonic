@@ -550,6 +550,32 @@ def test_readiness_reports_malformed_requested_custom_presets(
     assert "Readiness config failed:" not in captured.err
 
 
+def test_readiness_reports_schema_invalid_requested_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "bad.yml").write_text(
+        """
+name: bad
+stages:
+  loudness: true
+""",
+        encoding="utf-8",
+    )
+
+    result = readiness(argparse.Namespace(preset=["custom:bad"], strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] custom:bad - Bad" in captured.out
+    assert "Preset stage 'loudness' must be a mapping." in captured.out
+    assert "Readiness config failed:" not in captured.err
+
+
 def test_readiness_lists_custom_presets(
     tmp_settings,
     monkeypatch,

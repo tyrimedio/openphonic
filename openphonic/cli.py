@@ -80,11 +80,25 @@ def _core_media_messages() -> list[str]:
     ]
 
 
+def _config_schema_messages(config: PipelineConfig) -> list[str]:
+    if not isinstance(config.stages, dict):
+        return ["Preset stages must be a mapping."]
+    return [
+        f"Preset stage {stage_name!r} must be a mapping."
+        for stage_name, stage_config in config.stages.items()
+        if not isinstance(stage_config, dict)
+    ]
+
+
 def _readiness_messages(preset: PipelinePreset, settings: Settings) -> list[str]:
     messages = _core_media_messages()
     try:
         config = PipelineConfig.from_path(preset.path)
-        messages.extend(issue.message for issue in pipeline_preflight_issues(config, settings))
+        schema_messages = _config_schema_messages(config)
+        if schema_messages:
+            messages.extend(schema_messages)
+        else:
+            messages.extend(issue.message for issue in pipeline_preflight_issues(config, settings))
     except (OSError, TypeError, ValueError, AttributeError, yaml.YAMLError) as exc:
         messages.append(f"Preset config could not be inspected: {exc}")
     return messages
