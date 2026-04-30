@@ -310,6 +310,7 @@ def test_readiness_reports_preset_preflight_status(
     monkeypatch,
     capsys,
 ) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
     monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: False)
     monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
 
@@ -328,6 +329,7 @@ def test_readiness_strict_returns_nonzero_for_blocked_presets(
     tmp_settings,
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
     monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: False)
     monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
 
@@ -338,8 +340,10 @@ def test_readiness_strict_returns_nonzero_for_blocked_presets(
 
 def test_readiness_lists_custom_presets(
     tmp_settings,
+    monkeypatch,
     capsys,
 ) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
     preset_dir = tmp_settings / "presets"
     preset_dir.mkdir(parents=True)
     (preset_dir / "daily-show.yml").write_text(
@@ -362,3 +366,39 @@ stages:
 
     assert result == 0
     assert "[ready] custom:daily-show - Daily show" in capsys.readouterr().out
+
+
+def test_readiness_reports_missing_core_media_tools(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: None)
+
+    result = readiness(argparse.Namespace(strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] podcast-default - Podcast default" in captured.out
+    assert "ffmpeg is required but was not found on PATH." in captured.out
+    assert "ffprobe is required but was not found on PATH." in captured.out
+
+
+def test_readiness_reports_malformed_default_config(
+    tmp_path,
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "broken.yml"
+    config_path.write_text("name: [", encoding="utf-8")
+    monkeypatch.setenv("OPENPHONIC_PIPELINE_CONFIG", str(config_path))
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    get_settings.cache_clear()
+
+    result = readiness(argparse.Namespace(strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] podcast-default - Podcast default" in captured.out
+    assert "Preset config could not be inspected:" in captured.out

@@ -5,6 +5,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import yaml
+
 from openphonic.core.logging import configure_logging
 from openphonic.core.settings import Settings, get_settings
 from openphonic.pipeline.config import (
@@ -68,12 +70,22 @@ def _load_smoke_config(args: argparse.Namespace, settings: Settings) -> Pipeline
     return PipelineConfig.from_path(Path(args.config or settings.pipeline_config))
 
 
+def _core_media_messages() -> list[str]:
+    return [
+        f"{executable} is required but was not found on PATH."
+        for executable in ("ffmpeg", "ffprobe")
+        if shutil.which(executable) is None
+    ]
+
+
 def _readiness_messages(preset: PipelinePreset, settings: Settings) -> list[str]:
+    messages = _core_media_messages()
     try:
         config = PipelineConfig.from_path(preset.path)
-        return [issue.message for issue in pipeline_preflight_issues(config, settings)]
-    except (OSError, TypeError, ValueError, AttributeError) as exc:
-        return [f"Preset config could not be inspected: {exc}"]
+        messages.extend(issue.message for issue in pipeline_preflight_issues(config, settings))
+    except (OSError, TypeError, ValueError, AttributeError, yaml.YAMLError) as exc:
+        messages.append(f"Preset config could not be inspected: {exc}")
+    return messages
 
 
 def process_file(args: argparse.Namespace) -> int:
