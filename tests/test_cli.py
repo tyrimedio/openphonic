@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openphonic.cli import smoke_test
+from openphonic.cli import readiness, smoke_test
 from openphonic.core.settings import get_settings
 
 
@@ -303,3 +303,102 @@ stages:
     captured = capsys.readouterr()
     assert "Smoke test preflight failed:" in captured.err
     assert "Intro/outro insertion requires intro_path or outro_path." in captured.err
+
+
+def test_readiness_reports_preset_preflight_status(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: False)
+    monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
+
+    result = readiness(argparse.Namespace(strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[ready] podcast-default - Podcast default" in captured.out
+    assert "[blocked] speech-cleanup - Speech cleanup" in captured.out
+    assert "DeepFilterNet noise reduction is enabled" in captured.out
+    assert "[blocked] transcript-review - Transcript review" in captured.out
+    assert "Transcription is enabled, but faster-whisper is not installed." in captured.out
+
+
+def test_readiness_strict_returns_nonzero_for_blocked_presets(
+    tmp_settings,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    monkeypatch.setattr("openphonic.pipeline.preflight._binary_available", lambda binary: False)
+    monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
+
+    result = readiness(argparse.Namespace(strict=True))
+
+    assert result == 2
+
+
+def test_readiness_lists_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "daily-show.yml").write_text(
+        """
+preset:
+  label: Daily show
+  description: Daily show production preset.
+name: daily-show
+target:
+  codec: pcm_s16le
+  container: wav
+stages:
+  loudness:
+    enabled: true
+""",
+        encoding="utf-8",
+    )
+
+    result = readiness(argparse.Namespace(strict=False))
+
+    assert result == 0
+    assert "[ready] custom:daily-show - Daily show" in capsys.readouterr().out
+
+
+def test_readiness_reports_missing_core_media_tools(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: None)
+
+    result = readiness(argparse.Namespace(strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] podcast-default - Podcast default" in captured.out
+    assert "ffmpeg is required but was not found on PATH." in captured.out
+    assert "ffprobe is required but was not found on PATH." in captured.out
+
+
+def test_readiness_reports_malformed_default_config(
+    tmp_path,
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    config_path = tmp_path / "broken.yml"
+    config_path.write_text("name: [", encoding="utf-8")
+    monkeypatch.setenv("OPENPHONIC_PIPELINE_CONFIG", str(config_path))
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    get_settings.cache_clear()
+
+    result = readiness(argparse.Namespace(strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] podcast-default - Podcast default" in captured.out
+    assert "Preset config could not be inspected:" in captured.out

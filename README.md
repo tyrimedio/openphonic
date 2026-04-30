@@ -81,6 +81,23 @@ Use this as the first local verification pass after setup. If it fails, fix the
 FFmpeg/core pipeline path before testing transcription, diarization, denoise, or
 source separation.
 
+## Preset Readiness
+
+Check which built-in and custom presets can run on the current machine before
+uploading a job or running a heavier smoke test:
+
+```bash
+openphonic readiness
+```
+
+The report marks each preset as `ready` or `blocked` and prints missing local
+tools, Python packages, tokens, or configured assets. Use `--strict` when you
+want setup automation to fail if any advertised preset is blocked:
+
+```bash
+openphonic readiness --strict
+```
+
 ## Docker
 
 ```bash
