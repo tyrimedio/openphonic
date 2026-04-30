@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from openphonic.cli import (
+    inspect_commands,
     inspect_cut_suggestions,
     inspect_diarization,
     inspect_job,
@@ -920,6 +921,198 @@ def test_inspect_job_rejects_malformed_manifest(
 
     assert result == 2
     assert "Job inspection failed: manifest must be a JSON object." in capsys.readouterr().err
+
+
+def test_inspect_commands_reports_command_summary(
+    tmp_path,
+    capsys,
+) -> None:
+    command_log_path = tmp_path / "commands.jsonl"
+    rows = [
+        {
+            "event": "process.started",
+            "executable": "ffprobe",
+            "argv": ["ffprobe", "input.wav"],
+        },
+        {
+            "event": "process.succeeded",
+            "executable": "ffprobe",
+            "argv": ["ffprobe", "input.wav"],
+            "returncode": 0,
+            "duration_ms": 12,
+        },
+        {
+            "event": "process.started",
+            "executable": "ffmpeg",
+            "argv": ["ffmpeg", "-i", "input.wav", "output.m4a"],
+        },
+        {
+            "event": "process.succeeded",
+            "executable": "ffmpeg",
+            "argv": ["ffmpeg", "-i", "input.wav", "output.m4a"],
+            "returncode": 0,
+            "duration_ms": 25,
+        },
+    ]
+    command_log_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    result = inspect_commands(argparse.Namespace(command_log=str(command_log_path), strict=True))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Command log: {command_log_path.resolve()}" in captured.out
+    assert "Entries: 4" in captured.out
+    assert "Started: 2" in captured.out
+    assert "Succeeded: 2" in captured.out
+    assert "Failed: 0" in captured.out
+    assert "Unterminated: 0" in captured.out
+    assert "Malformed entries: 0" in captured.out
+    assert "Executables: ffmpeg=1, ffprobe=1" in captured.out
+    assert "Total duration: 0.037s" in captured.out
+    assert "Warnings:" not in captured.out
+
+
+def test_inspect_commands_strict_fails_on_unterminated_commands(
+    tmp_path,
+    capsys,
+) -> None:
+    command_log_path = tmp_path / "commands.jsonl"
+    command_log_path.write_text(
+        json.dumps({"event": "process.started", "executable": "ffmpeg"}) + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_commands(argparse.Namespace(command_log=str(command_log_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Started: 1" in captured.out
+    assert "Succeeded: 0" in captured.out
+    assert "Failed: 0" in captured.out
+    assert "Unterminated: 1" in captured.out
+    assert "1 command start(s) have no matching terminal event." in captured.out
+
+
+def test_inspect_commands_strict_matches_terminals_to_started_command(
+    tmp_path,
+    capsys,
+) -> None:
+    command_log_path = tmp_path / "commands.jsonl"
+    command_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "process.started",
+                        "executable": "ffmpeg",
+                        "argv": ["ffmpeg", "-i", "a.wav", "a.m4a"],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "process.succeeded",
+                        "executable": "ffmpeg",
+                        "argv": ["ffmpeg", "-i", "a.wav", "a.m4a"],
+                        "returncode": 0,
+                        "duration_ms": 10,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "process.succeeded",
+                        "executable": "ffmpeg",
+                        "argv": ["ffmpeg", "-i", "a.wav", "a.m4a"],
+                        "returncode": 0,
+                        "duration_ms": 11,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "process.started",
+                        "executable": "ffmpeg",
+                        "argv": ["ffmpeg", "-i", "b.wav", "b.m4a"],
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_commands(argparse.Namespace(command_log=str(command_log_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Started: 2" in captured.out
+    assert "Succeeded: 2" in captured.out
+    assert "Unterminated: 1" in captured.out
+    assert "Line 3 process.succeeded has no matching process.started event." in captured.out
+    assert "1 command start(s) have no matching terminal event." in captured.out
+
+
+def test_inspect_commands_strict_fails_on_failures_and_malformed_entries(
+    tmp_path,
+    capsys,
+) -> None:
+    command_log_path = tmp_path / "commands.jsonl"
+    command_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"event": "process.started", "executable": "ffmpeg"}),
+                json.dumps(
+                    {
+                        "event": "process.failed",
+                        "executable": "ffmpeg",
+                        "returncode": 1,
+                        "duration_ms": 14,
+                    }
+                ),
+                "{bad",
+                "[]",
+                json.dumps(
+                    {
+                        "event": "process.succeeded",
+                        "executable": "ffmpeg",
+                        "returncode": 1,
+                        "duration_ms": -1,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_commands(argparse.Namespace(command_log=str(command_log_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Entries: 3" in captured.out
+    assert "Failed: 1" in captured.out
+    assert "Malformed entries: 2" in captured.out
+    assert "Failures:" in captured.out
+    assert "line 2: ffmpeg returncode=1" in captured.out
+    assert "Line 2 process.failed recorded returncode 1." in captured.out
+    assert "Line 3 is invalid JSON:" in captured.out
+    assert "Line 4 must be a JSON object." in captured.out
+    assert "Line 5 process.succeeded recorded returncode 1." in captured.out
+    assert "Line 5 process.succeeded has invalid duration_ms." in captured.out
+
+
+def test_inspect_commands_reports_invalid_utf8(
+    tmp_path,
+    capsys,
+) -> None:
+    command_log_path = tmp_path / "commands.jsonl"
+    command_log_path.write_bytes(b"\xff")
+
+    result = inspect_commands(argparse.Namespace(command_log=str(command_log_path), strict=False))
+
+    assert result == 2
+    assert "Command log inspection failed: invalid UTF-8:" in capsys.readouterr().err
 
 
 def test_smoke_test_generates_input_and_copies_output(
