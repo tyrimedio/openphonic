@@ -138,9 +138,10 @@ class PipelineRunner:
 
             if self.config.enabled("diarization"):
                 self._progress("diarization", 94)
-                artifacts.update(
-                    DiarizationStage(self.config, self.command_log_path).run(current, work_dir)
-                )
+                if "diarization_json" not in artifacts:
+                    artifacts.update(
+                        DiarizationStage(self.config, self.command_log_path).run(current, work_dir)
+                    )
         except Exception as exc:
             if isinstance(exc, StageError):
                 artifacts.update(exc.artifacts)

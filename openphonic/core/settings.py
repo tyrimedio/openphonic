@@ -50,6 +50,7 @@ class Settings:
     deepfilternet_bin: str
     transcription_provider: str = "local"
     deepgram_api_key: str | None = None
+    deepgram_model: str = "nova-3"
 
     @property
     def uploads_dir(self) -> Path:
@@ -88,4 +89,5 @@ def get_settings() -> Settings:
             TRANSCRIPTION_PROVIDERS,
         ),
         deepgram_api_key=os.getenv("DEEPGRAM_API_KEY") or None,
+        deepgram_model=os.getenv("OPENPHONIC_DEEPGRAM_MODEL") or "nova-3",
     )

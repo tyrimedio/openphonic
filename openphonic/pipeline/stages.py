@@ -9,8 +9,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from openphonic.core.settings import get_settings
+from openphonic.core.settings import Settings, get_settings
 from openphonic.pipeline.config import PipelineConfig
+from openphonic.pipeline.deepgram import (
+    DeepgramError,
+    DeepgramOptions,
+    deepgram_response_to_diarization,
+    deepgram_response_to_transcript,
+    diarization_to_rttm,
+    transcribe_deepgram_file,
+)
 from openphonic.pipeline.ffmpeg import (
     build_ingest_command,
     build_intro_outro_command,
@@ -281,11 +289,7 @@ class TranscriptionStage(PipelineStage):
         stage = self.config.stage("transcription")
         settings = get_settings()
         if settings.transcription_provider == "deepgram":
-            raise StageError(
-                "Deepgram transcription provider is configured, but the Deepgram adapter "
-                "is not implemented yet. Use TRANSCRIPTION_PROVIDER=local until the "
-                "adapter lands."
-            )
+            return self._run_deepgram(input_path, work_dir, stage, settings)
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
@@ -324,17 +328,82 @@ class TranscriptionStage(PipelineStage):
         require_artifact(vtt_path, "Transcription")
         return {"transcript_json": json_path, "transcript_vtt": vtt_path}
 
+    def _run_deepgram(
+        self,
+        input_path: Path,
+        work_dir: Path,
+        stage: dict[str, Any],
+        settings: Settings,
+    ) -> dict[str, Path]:
+        if not settings.deepgram_api_key:
+            raise StageError("Deepgram transcription provider requires DEEPGRAM_API_KEY.")
+        model_name = str(stage.get("deepgram_model") or settings.deepgram_model)
+        language = stage.get("language")
+        if language is not None:
+            language = str(language)
+        diarize = self.config.enabled("diarization")
+        try:
+            response = transcribe_deepgram_file(
+                input_path,
+                DeepgramOptions(
+                    api_key=settings.deepgram_api_key,
+                    model=model_name,
+                    language=language,
+                    diarize=diarize,
+                ),
+            )
+        except DeepgramError as exc:
+            raise StageError(str(exc)) from exc
+
+        raw_path = work_dir / "deepgram_response.json"
+        raw_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
+        require_artifact(raw_path, "Deepgram response")
+        artifacts = {"deepgram_response": raw_path}
+
+        try:
+            transcript = deepgram_response_to_transcript(
+                response,
+                model=model_name,
+                language=language,
+            )
+        except DeepgramError as exc:
+            raise StageError(str(exc), artifacts=artifacts) from exc
+
+        json_path = work_dir / "transcript.json"
+        json_path.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
+        require_artifact(json_path, "Transcription")
+
+        vtt_path = work_dir / "transcript.vtt"
+        vtt_path.write_text(_segments_to_vtt(transcript["segments"]), encoding="utf-8")
+        require_artifact(vtt_path, "Transcription")
+
+        artifacts.update({"transcript_json": json_path, "transcript_vtt": vtt_path})
+        if diarize:
+            try:
+                diarization = deepgram_response_to_diarization(response, model=model_name)
+            except DeepgramError as exc:
+                raise StageError(str(exc), artifacts=artifacts) from exc
+            diarization_path = work_dir / "diarization.json"
+            diarization_path.write_text(json.dumps(diarization, indent=2), encoding="utf-8")
+            require_artifact(diarization_path, "Diarization")
+
+            rttm_path = work_dir / "diarization.rttm"
+            rttm_path.write_text(
+                diarization_to_rttm(diarization, source_name=input_path.stem),
+                encoding="utf-8",
+            )
+            require_artifact(rttm_path, "Diarization", allow_empty=True)
+            artifacts["diarization_json"] = diarization_path
+            artifacts["diarization_rttm"] = rttm_path
+        return artifacts
+
 
 class DiarizationStage(PipelineStage):
     def run(self, input_path: Path, work_dir: Path) -> dict[str, Path]:
         stage = self.config.stage("diarization")
         settings = get_settings()
         if settings.transcription_provider == "deepgram":
-            raise StageError(
-                "Deepgram diarization must run through the transcription provider, but "
-                "the Deepgram adapter is not implemented yet. Use TRANSCRIPTION_PROVIDER=local "
-                "until the adapter lands."
-            )
+            return _existing_deepgram_diarization_artifacts(work_dir)
         if not settings.hf_token:
             raise StageError("Diarization requires HF_TOKEN for pyannote pretrained pipelines.")
         try:
@@ -372,6 +441,19 @@ class DiarizationStage(PipelineStage):
         )
         require_artifact(json_path, "Diarization")
         return {"diarization_rttm": rttm_path, "diarization_json": json_path}
+
+
+def _existing_deepgram_diarization_artifacts(work_dir: Path) -> dict[str, Path]:
+    json_path = require_artifact(work_dir / "diarization.json", "Diarization")
+    rttm_path = work_dir / "diarization.rttm"
+    artifacts = {"diarization_json": json_path}
+    if rttm_path.exists():
+        artifacts["diarization_rttm"] = require_artifact(
+            rttm_path,
+            "Diarization",
+            allow_empty=True,
+        )
+    return artifacts
 
 
 def _timestamp(seconds: float) -> str:

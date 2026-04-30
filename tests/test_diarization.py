@@ -158,7 +158,29 @@ def test_diarization_stage_requires_hugging_face_token(tmp_path, monkeypatch) ->
         get_settings.cache_clear()
 
 
-def test_diarization_stage_rejects_unimplemented_deepgram_provider(
+def test_diarization_stage_reuses_deepgram_artifacts_from_transcription(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "deepgram")
+    (tmp_path / "diarization.json").write_text('{"segments": []}', encoding="utf-8")
+    (tmp_path / "diarization.rttm").write_text("", encoding="utf-8")
+    get_settings.cache_clear()
+
+    try:
+        artifacts = DiarizationStage(PipelineConfig(name="test")).run(input_path, tmp_path)
+    finally:
+        get_settings.cache_clear()
+
+    assert artifacts == {
+        "diarization_json": tmp_path / "diarization.json",
+        "diarization_rttm": tmp_path / "diarization.rttm",
+    }
+
+
+def test_diarization_stage_requires_deepgram_transcription_artifact(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -168,7 +190,7 @@ def test_diarization_stage_rejects_unimplemented_deepgram_provider(
     get_settings.cache_clear()
 
     try:
-        with pytest.raises(StageError, match="Deepgram diarization"):
+        with pytest.raises(StageError, match="did not produce expected artifact"):
             DiarizationStage(PipelineConfig(name="test")).run(input_path, tmp_path)
     finally:
         get_settings.cache_clear()

@@ -106,6 +106,28 @@ class SuggestingTranscriptionStage:
         return {"transcript_json": transcript_path}
 
 
+class TranscriptionStageWithDiarization:
+    def __init__(self, config: PipelineConfig, command_log_path: Path | None = None) -> None:
+        _ = config, command_log_path
+
+    def run(self, input_path: Path, work_dir: Path) -> dict[str, Path]:
+        _ = input_path
+        transcript_path = work_dir / "transcript.json"
+        transcript_path.write_text('{"segments": []}', encoding="utf-8")
+        diarization_path = work_dir / "diarization.json"
+        diarization_path.write_text('{"segments": []}', encoding="utf-8")
+        return {"transcript_json": transcript_path, "diarization_json": diarization_path}
+
+
+class UnexpectedDiarizationStage:
+    def __init__(self, config: PipelineConfig, command_log_path: Path | None = None) -> None:
+        _ = config, command_log_path
+
+    def run(self, input_path: Path, work_dir: Path) -> dict[str, Path]:
+        _ = input_path, work_dir
+        raise AssertionError("DiarizationStage should not run")
+
+
 def test_runner_validates_media_and_writes_metadata_artifact(tmp_path, monkeypatch) -> None:
     input_path = tmp_path / "input.wav"
     input_path.write_bytes(b"not real audio")
@@ -208,6 +230,58 @@ def test_runner_inserts_intro_outro_before_final_audio(tmp_path, monkeypatch) ->
     assert result.artifacts["intro_outro_wav"] == result.output_path
     assert result.artifacts["final_audio"] == result.output_path
     assert ("intro_outro", 62) in progress
+
+
+def test_runner_skips_diarization_stage_when_transcription_produces_diarization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"not real audio")
+
+    def fake_probe_media(path: Path, log_path: Path | None = None) -> MediaMetadata:
+        _ = log_path
+        return MediaMetadata(
+            path=path,
+            format_name="wav",
+            duration_seconds=1.0,
+            audio_streams=[
+                AudioStreamMetadata(
+                    index=0,
+                    codec_name="pcm_s16le",
+                    sample_rate=48000,
+                    channels=2,
+                    duration_seconds=1.0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr("openphonic.pipeline.runner.probe_media", fake_probe_media)
+    monkeypatch.setattr("openphonic.pipeline.runner.IngestStage", FakeIngestStage)
+    monkeypatch.setattr(
+        "openphonic.pipeline.runner.TranscriptionStage",
+        TranscriptionStageWithDiarization,
+    )
+    monkeypatch.setattr("openphonic.pipeline.runner.DiarizationStage", UnexpectedDiarizationStage)
+
+    config = PipelineConfig(
+        name="test",
+        stages={
+            "silence_trim": {"enabled": False},
+            "loudness": {"enabled": False},
+            "transcription": {"enabled": True},
+            "diarization": {"enabled": True},
+        },
+    )
+    progress: list[tuple[str, int]] = []
+
+    result = PipelineRunner(
+        config,
+        progress_callback=lambda stage, percent: progress.append((stage, percent)),
+    ).run(input_path, tmp_path / "work")
+
+    assert result.artifacts["diarization_json"] == tmp_path / "work" / "diarization.json"
+    assert ("diarization", 94) in progress
 
 
 def test_runner_writes_failed_manifest_with_partial_artifacts(tmp_path, monkeypatch) -> None:

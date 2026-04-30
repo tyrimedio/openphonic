@@ -63,7 +63,7 @@ def test_preflight_reports_missing_ml_python_dependencies(tmp_path, monkeypatch)
     assert any("pyannote.audio is not installed" in message for message in messages)
 
 
-def test_preflight_blocks_deepgram_provider_without_local_ml_checks(
+def test_preflight_accepts_deepgram_provider_without_local_ml_checks(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -87,13 +87,7 @@ def test_preflight_blocks_deepgram_provider_without_local_ml_checks(
     )
 
     messages = [issue.message for issue in issues]
-    assert messages == [
-        (
-            "Deepgram transcription provider is configured, but the Deepgram adapter "
-            "is not implemented yet. Use TRANSCRIPTION_PROVIDER=local until the "
-            "adapter lands."
-        )
-    ]
+    assert messages == []
     assert not any("faster-whisper" in message for message in messages)
     assert not any("HF_TOKEN" in message for message in messages)
     assert not any("pyannote.audio" in message for message in messages)
@@ -108,8 +102,7 @@ def test_preflight_requires_deepgram_api_key_for_deepgram_provider(tmp_path) -> 
     )
 
     messages = [issue.message for issue in issues]
-    assert "Deepgram transcription provider requires DEEPGRAM_API_KEY." in messages
-    assert any("adapter is not implemented yet" in message for message in messages)
+    assert messages == ["Deepgram transcription provider requires DEEPGRAM_API_KEY."]
 
 
 def test_preflight_requires_transcription_for_deepgram_diarization(tmp_path) -> None:
