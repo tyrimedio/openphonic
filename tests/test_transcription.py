@@ -2,9 +2,11 @@ import json
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from openphonic.core.settings import get_settings
 from openphonic.pipeline.config import PipelineConfig
-from openphonic.pipeline.stages import TranscriptionStage
+from openphonic.pipeline.stages import StageError, TranscriptionStage
 
 
 def test_transcription_stage_writes_word_timestamp_artifacts(tmp_path, monkeypatch) -> None:
@@ -97,3 +99,19 @@ def test_transcription_stage_writes_word_timestamp_artifacts(tmp_path, monkeypat
     assert (tmp_path / "transcript.vtt").read_text(encoding="utf-8") == (
         "WEBVTT\n\n1\n00:00:00.000 --> 00:00:01.100\nHello world\n"
     )
+
+
+def test_transcription_stage_rejects_unimplemented_deepgram_provider(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "deepgram")
+    get_settings.cache_clear()
+
+    try:
+        with pytest.raises(StageError, match="Deepgram transcription provider"):
+            TranscriptionStage(PipelineConfig(name="test")).run(input_path, tmp_path)
+    finally:
+        get_settings.cache_clear()

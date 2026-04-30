@@ -246,9 +246,11 @@ CPU VPS running Openphonic with Docker Compose
 ```
 
 The selected future provider path is Deepgram Nova-3 for hosted transcription
-and diarization. That adapter is not implemented yet; current releases still use
-local `faster-whisper` and `pyannote.audio` when ML presets are enabled. Do not
-set Deepgram-only environment variables until the adapter lands.
+and diarization. The config keys `TRANSCRIPTION_PROVIDER` and
+`DEEPGRAM_API_KEY` exist so deployment files can be prepared, but
+`TRANSCRIPTION_PROVIDER=deepgram` is intentionally blocked by preflight until
+the adapter lands. Current releases still use local `faster-whisper` and
+`pyannote.audio` when ML presets are enabled.
 
 The intended v1 hosted security boundary is Cloudflare Access in front of the
 whole app, not per-user accounts inside Openphonic. The app should continue to

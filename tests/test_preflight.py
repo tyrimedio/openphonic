@@ -63,6 +63,73 @@ def test_preflight_reports_missing_ml_python_dependencies(tmp_path, monkeypatch)
     assert any("pyannote.audio is not installed" in message for message in messages)
 
 
+def test_preflight_blocks_deepgram_provider_without_local_ml_checks(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    settings = make_settings(
+        tmp_path,
+        hf_token=None,
+        transcription_provider="deepgram",
+        deepgram_api_key="dg_test",
+    )
+    monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
+
+    issues = pipeline_preflight_issues(
+        PipelineConfig(
+            name="hosted",
+            stages={
+                "transcription": {"enabled": True},
+                "diarization": {"enabled": True},
+            },
+        ),
+        settings,
+    )
+
+    messages = [issue.message for issue in issues]
+    assert messages == [
+        (
+            "Deepgram transcription provider is configured, but the Deepgram adapter "
+            "is not implemented yet. Use TRANSCRIPTION_PROVIDER=local until the "
+            "adapter lands."
+        )
+    ]
+    assert not any("faster-whisper" in message for message in messages)
+    assert not any("HF_TOKEN" in message for message in messages)
+    assert not any("pyannote.audio" in message for message in messages)
+
+
+def test_preflight_requires_deepgram_api_key_for_deepgram_provider(tmp_path) -> None:
+    settings = make_settings(tmp_path, transcription_provider="deepgram", deepgram_api_key=None)
+
+    issues = pipeline_preflight_issues(
+        PipelineConfig(name="hosted", stages={"transcription": {"enabled": True}}),
+        settings,
+    )
+
+    messages = [issue.message for issue in issues]
+    assert "Deepgram transcription provider requires DEEPGRAM_API_KEY." in messages
+    assert any("adapter is not implemented yet" in message for message in messages)
+
+
+def test_preflight_requires_transcription_for_deepgram_diarization(tmp_path) -> None:
+    settings = make_settings(
+        tmp_path,
+        transcription_provider="deepgram",
+        deepgram_api_key="dg_test",
+    )
+
+    issues = pipeline_preflight_issues(
+        PipelineConfig(name="hosted", stages={"diarization": {"enabled": True}}),
+        settings,
+    )
+
+    assert any(
+        issue.stage == "diarization" and "must run through stages.transcription" in issue.message
+        for issue in issues
+    )
+
+
 def test_preflight_validates_intro_outro_assets(tmp_path) -> None:
     settings = make_settings(tmp_path)
     config_path = tmp_path / "presets" / "show.yml"
@@ -100,6 +167,8 @@ def make_settings(
     *,
     hf_token: str | None = "hf_test",
     deepfilternet_bin: str = "deepFilter",
+    transcription_provider: str = "local",
+    deepgram_api_key: str | None = None,
 ) -> Settings:
     return Settings(
         data_dir=tmp_path / "data",
@@ -114,4 +183,6 @@ def make_settings(
         whisper_device="auto",
         pyannote_model="pyannote/speaker-diarization-3.1",
         deepfilternet_bin=deepfilternet_bin,
+        transcription_provider=transcription_provider,
+        deepgram_api_key=deepgram_api_key,
     )
