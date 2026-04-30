@@ -106,6 +106,22 @@ The command reads `pipeline_manifest.json`, reports the pipeline status, input,
 output, and artifact paths, and warns when expected files are missing. Use
 `--strict` when local validation scripts should fail on missing artifacts.
 
+## Job Event Inspection
+
+Every web job writes `job-events.jsonl` with job starts, progress updates,
+terminal job status, retries, and reviewed-cut apply events. Inspect it when you
+need a quick lifecycle summary for a job:
+
+```bash
+openphonic inspect-events ./data/jobs/<job-id>/job-events.jsonl
+openphonic inspect-events ./data/jobs/<job-id>/job-events.jsonl --strict
+```
+
+The command reports final job status, last progress, retries, failures,
+interrupted jobs, malformed entries, and incomplete job or cut-apply runs. Use
+`--strict` when local validation should fail on failed, interrupted, malformed,
+or unterminated job event logs.
+
 ## Command Log Inspection
 
 Each pipeline run writes `commands.jsonl` with FFmpeg and FFprobe starts,

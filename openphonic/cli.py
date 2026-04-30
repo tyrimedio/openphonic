@@ -943,6 +943,251 @@ def inspect_job(args: argparse.Namespace) -> int:
     return 0
 
 
+def _event_job_id(row: dict[str, Any]) -> str:
+    job_id = row.get("job_id")
+    return job_id if isinstance(job_id, str) and job_id else "-"
+
+
+def _valid_progress(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 100:
+        return None
+    return value
+
+
+def _inspect_job_events(job_events_path: Path) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    event_counts: Counter[str] = Counter()
+    job_ids: set[str] = set()
+    open_job_starts: defaultdict[str, deque[int]] = defaultdict(deque)
+    open_cut_apply_starts: defaultdict[str, deque[int]] = defaultdict(deque)
+    failure_rows: list[dict[str, Any]] = []
+    entry_count = 0
+    malformed_entries = 0
+    final_status = "-"
+    last_event = "-"
+    last_event_line = 0
+    last_progress_stage = "-"
+    last_progress = None
+
+    try:
+        with job_events_path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    malformed_entries += 1
+                    warnings.append(f"Line {line_number} is blank.")
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    malformed_entries += 1
+                    warnings.append(f"Line {line_number} is invalid JSON: {exc}")
+                    continue
+                except ValueError as exc:
+                    malformed_entries += 1
+                    warnings.append(f"Line {line_number} is invalid JSON: {exc}")
+                    continue
+                if not isinstance(row, dict):
+                    malformed_entries += 1
+                    warnings.append(f"Line {line_number} must be a JSON object.")
+                    continue
+
+                entry_count += 1
+                event = row.get("event")
+                if not isinstance(event, str) or not event:
+                    warnings.append(f"Line {line_number} event must be a non-empty string.")
+                    continue
+                event_counts[event] += 1
+                last_event = event
+                last_event_line = line_number
+
+                timestamp = row.get("timestamp")
+                if not isinstance(timestamp, str) or not timestamp:
+                    warnings.append(f"Line {line_number} timestamp must be a non-empty string.")
+
+                job_id = _event_job_id(row)
+                if event.startswith("job.") or event.startswith("cut_apply."):
+                    if job_id == "-":
+                        warnings.append(f"Line {line_number} {event} has no job_id.")
+                    else:
+                        job_ids.add(job_id)
+
+                if event == "job.retry_queued":
+                    final_status = "queued"
+                    continue
+
+                if event == "job.started":
+                    open_job_starts[job_id].append(line_number)
+                    final_status = "running"
+                    continue
+
+                if event == "job.progress":
+                    progress = _valid_progress(row.get("progress"))
+                    if progress is None:
+                        warnings.append(f"Line {line_number} job.progress has invalid progress.")
+                    else:
+                        last_progress = progress
+                    current_stage = row.get("current_stage")
+                    if isinstance(current_stage, str) and current_stage:
+                        last_progress_stage = current_stage
+                    else:
+                        warnings.append(f"Line {line_number} job.progress has no current_stage.")
+                    continue
+
+                if event in {"job.succeeded", "job.failed", "job.interrupted"}:
+                    if open_job_starts[job_id]:
+                        open_job_starts[job_id].popleft()
+                    elif event != "job.interrupted":
+                        warnings.append(
+                            f"Line {line_number} {event} has no matching job.started event."
+                        )
+
+                    if event == "job.succeeded":
+                        final_status = "succeeded"
+                    elif event == "job.failed":
+                        final_status = "failed"
+                        failure_rows.append(
+                            {
+                                "line_number": line_number,
+                                "event": event,
+                                "error_type": row.get("error_type") or "-",
+                                "error_message": row.get("error_message") or "-",
+                            }
+                        )
+                        warnings.append(f"Line {line_number} job.failed recorded a job failure.")
+                    else:
+                        final_status = "interrupted"
+                        previous_status = row.get("previous_status")
+                        suffix = (
+                            f" from {previous_status}"
+                            if isinstance(previous_status, str) and previous_status
+                            else ""
+                        )
+                        warnings.append(f"Line {line_number} job.interrupted recorded{suffix}.")
+                    continue
+
+                if event == "cut_apply.started":
+                    open_cut_apply_starts[job_id].append(line_number)
+                    continue
+
+                if event in {"cut_apply.succeeded", "cut_apply.failed"}:
+                    if open_cut_apply_starts[job_id]:
+                        open_cut_apply_starts[job_id].popleft()
+                    else:
+                        warnings.append(
+                            f"Line {line_number} {event} has no matching cut_apply.started event."
+                        )
+                    if event == "cut_apply.failed":
+                        failure_rows.append(
+                            {
+                                "line_number": line_number,
+                                "event": event,
+                                "error_type": row.get("error_type") or "-",
+                                "error_message": row.get("error_message") or "-",
+                            }
+                        )
+                        warnings.append(
+                            f"Line {line_number} cut_apply.failed recorded a cut apply failure."
+                        )
+    except OSError as exc:
+        raise ValueError(f"could not read job event log: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"invalid UTF-8: {exc}") from exc
+
+    if entry_count == 0:
+        warnings.append("Job event log has no entries.")
+
+    unterminated_jobs = sum(len(starts) for starts in open_job_starts.values())
+    if unterminated_jobs:
+        warnings.append(f"{unterminated_jobs} job start(s) have no terminal event.")
+    unterminated_cut_applies = sum(len(starts) for starts in open_cut_apply_starts.values())
+    if unterminated_cut_applies:
+        warnings.append(f"{unterminated_cut_applies} cut apply start(s) have no terminal event.")
+
+    return (
+        {
+            "entries": entry_count,
+            "malformed_entries": malformed_entries,
+            "job_ids": sorted(job_ids),
+            "job_started": event_counts["job.started"],
+            "job_progress": event_counts["job.progress"],
+            "job_succeeded": event_counts["job.succeeded"],
+            "job_failed": event_counts["job.failed"],
+            "job_interrupted": event_counts["job.interrupted"],
+            "retry_queued": event_counts["job.retry_queued"],
+            "unterminated_jobs": unterminated_jobs,
+            "cut_apply_started": event_counts["cut_apply.started"],
+            "cut_apply_succeeded": event_counts["cut_apply.succeeded"],
+            "cut_apply_failed": event_counts["cut_apply.failed"],
+            "unterminated_cut_applies": unterminated_cut_applies,
+            "final_status": final_status,
+            "last_event": last_event,
+            "last_event_line": last_event_line,
+            "last_progress_stage": last_progress_stage,
+            "last_progress": last_progress,
+            "failure_rows": failure_rows,
+        },
+        warnings,
+    )
+
+
+def inspect_events(args: argparse.Namespace) -> int:
+    configure_logging()
+    job_events_path = Path(args.job_events).expanduser().resolve()
+    try:
+        summary, warnings = _inspect_job_events(job_events_path)
+    except ValueError as exc:
+        print(f"Job event inspection failed: {exc}", file=sys.stderr)
+        return 2
+
+    job_ids = summary["job_ids"]
+    last_progress = summary["last_progress"]
+    last_event_line = summary["last_event_line"]
+    print(f"Job events: {job_events_path}")
+    print(f"Entries: {summary['entries']}")
+    print(f"Job ids: {', '.join(job_ids) if job_ids else '-'}")
+    print(f"Final job status: {summary['final_status']}")
+    print(
+        f"Last event: {summary['last_event']} (line {last_event_line})"
+        if last_event_line
+        else "Last event: -"
+    )
+    print(
+        f"Last progress: {summary['last_progress_stage']} {last_progress}%"
+        if last_progress is not None
+        else "Last progress: -"
+    )
+    print(f"Job started: {summary['job_started']}")
+    print(f"Job progress: {summary['job_progress']}")
+    print(f"Job succeeded: {summary['job_succeeded']}")
+    print(f"Job failed: {summary['job_failed']}")
+    print(f"Job interrupted: {summary['job_interrupted']}")
+    print(f"Retry queued: {summary['retry_queued']}")
+    print(f"Unterminated jobs: {summary['unterminated_jobs']}")
+    print(
+        "Cut apply: "
+        f"started={summary['cut_apply_started']}, "
+        f"succeeded={summary['cut_apply_succeeded']}, "
+        f"failed={summary['cut_apply_failed']}, "
+        f"unterminated={summary['unterminated_cut_applies']}"
+    )
+    print(f"Malformed entries: {summary['malformed_entries']}")
+    if summary["failure_rows"]:
+        print("Failures:")
+        for failure in summary["failure_rows"]:
+            print(
+                f"  - line {failure['line_number']}: {failure['event']} "
+                f"{failure['error_type']} - {failure['error_message']}"
+            )
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"  - {warning}")
+
+    if args.strict and warnings:
+        return 2
+    return 0
+
+
 def _valid_returncode(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
@@ -1275,6 +1520,18 @@ def main() -> int:
         help="Return a non-zero exit code when command log warnings are present.",
     )
     command_log.set_defaults(func=inspect_commands)
+
+    job_events = subparsers.add_parser(
+        "inspect-events",
+        help="Summarize a job-events.jsonl lifecycle log and surface incomplete runs.",
+    )
+    job_events.add_argument("job_events", help="Path to job-events.jsonl.")
+    job_events.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return a non-zero exit code when job event warnings are present.",
+    )
+    job_events.set_defaults(func=inspect_events)
 
     args = parser.parse_args()
     return args.func(args)

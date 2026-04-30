@@ -10,6 +10,7 @@ from openphonic.cli import (
     inspect_commands,
     inspect_cut_suggestions,
     inspect_diarization,
+    inspect_events,
     inspect_job,
     inspect_transcript,
     process_file,
@@ -921,6 +922,221 @@ def test_inspect_job_rejects_malformed_manifest(
 
     assert result == 2
     assert "Job inspection failed: manifest must be a JSON object." in capsys.readouterr().err
+
+
+def test_inspect_events_reports_job_lifecycle_summary(
+    tmp_path,
+    capsys,
+) -> None:
+    job_events_path = tmp_path / "job-events.jsonl"
+    rows = [
+        {
+            "event": "job.started",
+            "timestamp": "2026-04-30T00:00:00+00:00",
+            "job_id": "job-1",
+            "input_path": "/tmp/input.wav",
+        },
+        {
+            "event": "job.progress",
+            "timestamp": "2026-04-30T00:00:01+00:00",
+            "job_id": "job-1",
+            "current_stage": "loudness",
+            "progress": 75,
+        },
+        {
+            "event": "job.succeeded",
+            "timestamp": "2026-04-30T00:00:02+00:00",
+            "job_id": "job-1",
+            "output_path": "/tmp/out.m4a",
+        },
+    ]
+    job_events_path.write_text(
+        "".join(f"{json.dumps(row)}\n" for row in rows),
+        encoding="utf-8",
+    )
+
+    result = inspect_events(argparse.Namespace(job_events=str(job_events_path), strict=True))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Job events: {job_events_path.resolve()}" in captured.out
+    assert "Entries: 3" in captured.out
+    assert "Job ids: job-1" in captured.out
+    assert "Final job status: succeeded" in captured.out
+    assert "Last event: job.succeeded (line 3)" in captured.out
+    assert "Last progress: loudness 75%" in captured.out
+    assert "Job started: 1" in captured.out
+    assert "Job progress: 1" in captured.out
+    assert "Job succeeded: 1" in captured.out
+    assert "Job failed: 0" in captured.out
+    assert "Unterminated jobs: 0" in captured.out
+    assert "Cut apply: started=0, succeeded=0, failed=0, unterminated=0" in captured.out
+    assert "Malformed entries: 0" in captured.out
+    assert "Warnings:" not in captured.out
+
+
+def test_inspect_events_strict_fails_on_unterminated_job_start(
+    tmp_path,
+    capsys,
+) -> None:
+    job_events_path = tmp_path / "job-events.jsonl"
+    job_events_path.write_text(
+        json.dumps(
+            {
+                "event": "job.started",
+                "timestamp": "2026-04-30T00:00:00+00:00",
+                "job_id": "job-1",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_events(argparse.Namespace(job_events=str(job_events_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Final job status: running" in captured.out
+    assert "Job started: 1" in captured.out
+    assert "Unterminated jobs: 1" in captured.out
+    assert "1 job start(s) have no terminal event." in captured.out
+
+
+def test_inspect_events_strict_fails_on_failures_and_malformed_entries(
+    tmp_path,
+    capsys,
+) -> None:
+    job_events_path = tmp_path / "job-events.jsonl"
+    job_events_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "job.started",
+                        "timestamp": "2026-04-30T00:00:00+00:00",
+                        "job_id": "job-1",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "job.failed",
+                        "timestamp": "2026-04-30T00:00:01+00:00",
+                        "job_id": "job-1",
+                        "error_type": "RuntimeError",
+                        "error_message": "boom",
+                    }
+                ),
+                "{bad",
+                "[]",
+                json.dumps(
+                    {
+                        "event": "job.progress",
+                        "timestamp": "2026-04-30T00:00:02+00:00",
+                        "job_id": "job-1",
+                        "current_stage": "",
+                        "progress": 101,
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_events(argparse.Namespace(job_events=str(job_events_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Entries: 3" in captured.out
+    assert "Final job status: failed" in captured.out
+    assert "Job failed: 1" in captured.out
+    assert "Malformed entries: 2" in captured.out
+    assert "Failures:" in captured.out
+    assert "line 2: job.failed RuntimeError - boom" in captured.out
+    assert "Line 2 job.failed recorded a job failure." in captured.out
+    assert "Line 3 is invalid JSON:" in captured.out
+    assert "Line 4 must be a JSON object." in captured.out
+    assert "Line 5 job.progress has invalid progress." in captured.out
+    assert "Line 5 job.progress has no current_stage." in captured.out
+
+
+def test_inspect_events_strict_fails_on_unterminated_cut_apply(
+    tmp_path,
+    capsys,
+) -> None:
+    job_events_path = tmp_path / "job-events.jsonl"
+    job_events_path.write_text(
+        json.dumps(
+            {
+                "event": "cut_apply.started",
+                "timestamp": "2026-04-30T00:00:00+00:00",
+                "job_id": "job-1",
+                "output_path": "/tmp/cut_reviewed.m4a",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_events(argparse.Namespace(job_events=str(job_events_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Cut apply: started=1, succeeded=0, failed=0, unterminated=1" in captured.out
+    assert "1 cut apply start(s) have no terminal event." in captured.out
+
+
+def test_inspect_events_matches_failed_cut_apply_without_output_path(
+    tmp_path,
+    capsys,
+) -> None:
+    job_events_path = tmp_path / "job-events.jsonl"
+    job_events_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "cut_apply.started",
+                        "timestamp": "2026-04-30T00:00:00+00:00",
+                        "job_id": "job-1",
+                        "output_path": "/tmp/cut_reviewed.m4a",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "cut_apply.failed",
+                        "timestamp": "2026-04-30T00:00:01+00:00",
+                        "job_id": "job-1",
+                        "error_type": "CutApplyError",
+                        "error_message": "bad cut",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_events(argparse.Namespace(job_events=str(job_events_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Cut apply: started=1, succeeded=0, failed=1, unterminated=0" in captured.out
+    assert "line 2: cut_apply.failed CutApplyError - bad cut" in captured.out
+    assert "cut apply start(s) have no terminal event" not in captured.out
+
+
+def test_inspect_events_reports_invalid_utf8(
+    tmp_path,
+    capsys,
+) -> None:
+    job_events_path = tmp_path / "job-events.jsonl"
+    job_events_path.write_bytes(b"\xff")
+
+    result = inspect_events(argparse.Namespace(job_events=str(job_events_path), strict=False))
+
+    assert result == 2
+    assert "Job event inspection failed: invalid UTF-8:" in capsys.readouterr().err
 
 
 def test_inspect_commands_reports_command_summary(
