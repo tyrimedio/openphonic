@@ -92,6 +92,10 @@ Use this as the first local verification pass after setup. If it fails, fix the
 FFmpeg/core pipeline path before testing transcription, diarization, denoise, or
 source separation.
 
+For the complete local acceptance workflow, including strict artifact/log
+inspection and the first optional-ML checks, see
+[docs/local-verification.md](docs/local-verification.md).
+
 ## Job Inspection
 
 After a smoke test, CLI process run, or web job finishes, inspect the work
