@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -214,6 +217,155 @@ def readiness(args: argparse.Namespace) -> int:
     return 0
 
 
+def _finite_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _inspect_transcript(transcript: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    segments = transcript.get("segments")
+    if not isinstance(segments, list):
+        raise ValueError("Transcript segments must be a list.")
+
+    warnings: list[str] = []
+    segment_count = 0
+    segments_with_words = 0
+    wordless_segments = 0
+    word_count = 0
+    timed_words = 0
+    invalid_timing = 0
+    duration = _finite_float(transcript.get("duration"))
+    if "duration" in transcript and (duration is None or duration < 0):
+        invalid_timing += 1
+    duration_bound = duration if duration is not None and duration >= 0 else None
+
+    for segment_index, segment in enumerate(segments):
+        if not isinstance(segment, dict):
+            warnings.append(f"Segment {segment_index} is not an object.")
+            continue
+        segment_count += 1
+        start = _finite_float(segment.get("start"))
+        end = _finite_float(segment.get("end"))
+        segment_timing_valid = (
+            start is not None and end is not None and start >= 0 and end >= 0 and end >= start
+        )
+        segment_within_duration = duration_bound is None or (
+            segment_timing_valid and end is not None and end <= duration_bound
+        )
+        if not segment_timing_valid or not segment_within_duration:
+            invalid_timing += 1
+
+        words = segment.get("words") or []
+        if not isinstance(words, list):
+            warnings.append(f"Segment {segment_index} words must be a list.")
+            words = []
+        if words:
+            segments_with_words += 1
+        else:
+            wordless_segments += 1
+        for word in words:
+            if not isinstance(word, dict):
+                warnings.append(f"Segment {segment_index} contains a non-object word.")
+                continue
+            word_count += 1
+            word_start = _finite_float(word.get("start"))
+            word_end = _finite_float(word.get("end"))
+            word_timing_valid = (
+                word_start is not None
+                and word_end is not None
+                and word_start >= 0
+                and word_end >= 0
+                and word_end >= word_start
+                and (duration_bound is None or word_end <= duration_bound)
+                and (
+                    not segment_timing_valid
+                    or (
+                        start is not None
+                        and end is not None
+                        and word_start >= start
+                        and word_end <= end
+                    )
+                )
+            )
+            if not word_timing_valid:
+                invalid_timing += 1
+            else:
+                timed_words += 1
+
+    if segment_count == 0:
+        warnings.append("Transcript has no segments.")
+    if word_count == 0 and segment_count > 0:
+        warnings.append("Transcript has no word timestamps.")
+    elif timed_words < word_count:
+        warnings.append("Some transcript words are missing valid timestamps.")
+    if wordless_segments:
+        warnings.append(f"{wordless_segments} transcript segment(s) have no words.")
+    if invalid_timing:
+        warnings.append(f"{invalid_timing} transcript timing value(s) are invalid.")
+
+    coverage = (timed_words / word_count * 100.0) if word_count else 0.0
+    return (
+        {
+            "engine": transcript.get("engine") or "-",
+            "model": transcript.get("model") or "-",
+            "language": transcript.get("language") or "-",
+            "duration": duration,
+            "segment_count": segment_count,
+            "segments_with_words": segments_with_words,
+            "word_count": word_count,
+            "timed_words": timed_words,
+            "word_coverage": coverage,
+        },
+        warnings,
+    )
+
+
+def inspect_transcript(args: argparse.Namespace) -> int:
+    configure_logging()
+    transcript_path = Path(args.transcript).expanduser().resolve()
+    try:
+        transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"Transcript inspection failed: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"Transcript inspection failed: invalid JSON: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(transcript, dict):
+        print("Transcript inspection failed: transcript must be a JSON object.", file=sys.stderr)
+        return 2
+    try:
+        summary, warnings = _inspect_transcript(transcript)
+    except ValueError as exc:
+        print(f"Transcript inspection failed: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Transcript: {transcript_path}")
+    print(f"Engine: {summary['engine']}")
+    print(f"Model: {summary['model']}")
+    print(f"Language: {summary['language']}")
+    duration = summary["duration"]
+    print(f"Duration: {duration:.3f}s" if duration is not None else "Duration: -")
+    print(f"Segments: {summary['segment_count']}")
+    print(f"Segments with words: {summary['segments_with_words']}/{summary['segment_count']}")
+    print(f"Words: {summary['word_count']}")
+    print(
+        f"Timed words: {summary['timed_words']}/{summary['word_count']} "
+        f"({summary['word_coverage']:.1f}%)"
+    )
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"  - {warning}")
+
+    if args.strict and warnings:
+        return 2
+    return 0
+
+
 def smoke_test(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
@@ -307,6 +459,18 @@ def main() -> int:
         help="Return a non-zero exit code if any preset is blocked.",
     )
     readiness_check.set_defaults(func=readiness)
+
+    transcript = subparsers.add_parser(
+        "inspect-transcript",
+        help="Summarize transcript artifact timing and word timestamp coverage.",
+    )
+    transcript.add_argument("transcript", help="Path to transcript.json.")
+    transcript.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return a non-zero exit code when transcript quality warnings are present.",
+    )
+    transcript.set_defaults(func=inspect_transcript)
 
     args = parser.parse_args()
     return args.func(args)
