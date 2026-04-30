@@ -576,6 +576,35 @@ stages:
     assert "Readiness config failed:" not in captured.err
 
 
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        ("[]", "Preset config must be a mapping."),
+        ("false", "Preset config must be a mapping."),
+        ("stages: []", "Preset stages must be a mapping."),
+    ],
+)
+def test_readiness_reports_raw_schema_invalid_requested_custom_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+    content,
+    message,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    preset_dir = tmp_settings / "presets"
+    preset_dir.mkdir(parents=True)
+    (preset_dir / "bad.yml").write_text(content, encoding="utf-8")
+
+    result = readiness(argparse.Namespace(preset=["custom:bad"], strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "[blocked] custom:bad - Bad" in captured.out
+    assert message in captured.out
+    assert "Readiness config failed:" not in captured.err
+
+
 def test_readiness_lists_custom_presets(
     tmp_settings,
     monkeypatch,
