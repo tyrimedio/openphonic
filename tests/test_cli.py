@@ -473,6 +473,36 @@ def test_readiness_strict_returns_nonzero_for_blocked_presets(
     assert result == 2
 
 
+def test_readiness_can_filter_to_requested_presets(
+    tmp_settings,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr("openphonic.cli.shutil.which", lambda executable: f"/usr/bin/{executable}")
+    monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
+
+    result = readiness(argparse.Namespace(preset=["transcript-review"], strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert "[blocked] transcript-review - Transcript review" in captured.out
+    assert "Transcription is enabled, but faster-whisper is not installed." in captured.out
+    assert "podcast-default" not in captured.out
+    assert "speaker-diarization" not in captured.out
+
+
+def test_readiness_reports_unknown_requested_presets(
+    tmp_settings,
+    capsys,
+) -> None:
+    result = readiness(argparse.Namespace(preset=["missing"], strict=False))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Readiness config failed: Unknown pipeline preset: missing" in captured.err
+
+
 def test_readiness_lists_custom_presets(
     tmp_settings,
     monkeypatch,

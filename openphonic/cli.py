@@ -14,6 +14,7 @@ from openphonic.pipeline.config import (
     PipelinePreset,
     available_presets,
     load_pipeline_config_for_preset,
+    preset_by_id,
 )
 from openphonic.pipeline.ffmpeg import run_command
 from openphonic.pipeline.preflight import format_preflight_issues, pipeline_preflight_issues
@@ -88,6 +89,20 @@ def _readiness_messages(preset: PipelinePreset, settings: Settings) -> list[str]
     return messages
 
 
+def _readiness_presets(args: argparse.Namespace, settings: Settings) -> list[PipelinePreset]:
+    requested = getattr(args, "preset", None)
+    if not requested:
+        return available_presets(settings.pipeline_config, settings.preset_dir)
+    return [
+        preset_by_id(
+            preset_id,
+            default_path=settings.pipeline_config,
+            preset_dir=settings.preset_dir,
+        )
+        for preset_id in requested
+    ]
+
+
 def process_file(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
@@ -128,7 +143,11 @@ def readiness(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
     blocked = 0
-    presets = available_presets(settings.pipeline_config, settings.preset_dir)
+    try:
+        presets = _readiness_presets(args, settings)
+    except ValueError as exc:
+        print(f"Readiness config failed: {exc}", file=sys.stderr)
+        return 2
 
     for preset in presets:
         messages = _readiness_messages(preset, settings)
@@ -226,6 +245,11 @@ def main() -> int:
     readiness_check = subparsers.add_parser(
         "readiness",
         help="Report which pipeline presets can run on this host.",
+    )
+    readiness_check.add_argument(
+        "--preset",
+        action="append",
+        help="Built-in or custom pipeline preset id to inspect. Can be provided more than once.",
     )
     readiness_check.add_argument(
         "--strict",
