@@ -937,6 +937,7 @@ def test_inspect_commands_reports_command_summary(
         {
             "event": "process.succeeded",
             "executable": "ffprobe",
+            "argv": ["ffprobe", "input.wav"],
             "returncode": 0,
             "duration_ms": 12,
         },
@@ -948,6 +949,7 @@ def test_inspect_commands_reports_command_summary(
         {
             "event": "process.succeeded",
             "executable": "ffmpeg",
+            "argv": ["ffmpeg", "-i", "input.wav", "output.m4a"],
             "returncode": 0,
             "duration_ms": 25,
         },
@@ -991,6 +993,63 @@ def test_inspect_commands_strict_fails_on_unterminated_commands(
     assert "Succeeded: 0" in captured.out
     assert "Failed: 0" in captured.out
     assert "Unterminated: 1" in captured.out
+    assert "1 command start(s) have no matching terminal event." in captured.out
+
+
+def test_inspect_commands_strict_matches_terminals_to_started_command(
+    tmp_path,
+    capsys,
+) -> None:
+    command_log_path = tmp_path / "commands.jsonl"
+    command_log_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "process.started",
+                        "executable": "ffmpeg",
+                        "argv": ["ffmpeg", "-i", "a.wav", "a.m4a"],
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "process.succeeded",
+                        "executable": "ffmpeg",
+                        "argv": ["ffmpeg", "-i", "a.wav", "a.m4a"],
+                        "returncode": 0,
+                        "duration_ms": 10,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "process.succeeded",
+                        "executable": "ffmpeg",
+                        "argv": ["ffmpeg", "-i", "a.wav", "a.m4a"],
+                        "returncode": 0,
+                        "duration_ms": 11,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "process.started",
+                        "executable": "ffmpeg",
+                        "argv": ["ffmpeg", "-i", "b.wav", "b.m4a"],
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = inspect_commands(argparse.Namespace(command_log=str(command_log_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Started: 2" in captured.out
+    assert "Succeeded: 2" in captured.out
+    assert "Unterminated: 1" in captured.out
+    assert "Line 3 process.succeeded has no matching process.started event." in captured.out
     assert "1 command start(s) have no matching terminal event." in captured.out
 
 

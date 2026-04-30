@@ -5,7 +5,7 @@ import json
 import math
 import shutil
 import sys
-from collections import Counter
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -949,10 +949,27 @@ def _valid_returncode(value: Any) -> int | None:
     return value
 
 
+def _command_signature(row: dict[str, Any]) -> tuple[str, tuple[str, ...], str]:
+    executable = row.get("executable")
+    executable_name = executable if isinstance(executable, str) and executable else "-"
+
+    argv_value = row.get("argv")
+    argv = (
+        tuple(argv_value)
+        if isinstance(argv_value, list) and all(isinstance(arg, str) for arg in argv_value)
+        else ()
+    )
+
+    cwd_value = row.get("cwd")
+    cwd = cwd_value if isinstance(cwd_value, str) else ""
+    return executable_name, argv, cwd
+
+
 def _inspect_command_log(command_log_path: Path) -> tuple[dict[str, Any], list[str]]:
     warnings: list[str] = []
     event_counts: Counter[str] = Counter()
     executable_counts: Counter[str] = Counter()
+    open_starts: defaultdict[tuple[str, tuple[str, ...], str], deque[int]] = defaultdict(deque)
     failure_rows: list[dict[str, Any]] = []
     entry_count = 0
     malformed_entries = 0
@@ -989,14 +1006,22 @@ def _inspect_command_log(command_log_path: Path) -> tuple[dict[str, Any], list[s
 
                 executable = row.get("executable")
                 executable_name = executable if isinstance(executable, str) and executable else "-"
+                command_signature = _command_signature(row)
                 if event == "process.started":
                     if executable_name == "-":
                         warnings.append(f"Line {line_number} process.started has no executable.")
                     else:
                         executable_counts[executable_name] += 1
+                    open_starts[command_signature].append(line_number)
 
                 if event not in {"process.succeeded", "process.failed"}:
                     continue
+                if open_starts[command_signature]:
+                    open_starts[command_signature].popleft()
+                else:
+                    warnings.append(
+                        f"Line {line_number} {event} has no matching process.started event."
+                    )
 
                 returncode = _valid_returncode(row.get("returncode"))
                 if returncode is None:
@@ -1029,12 +1054,7 @@ def _inspect_command_log(command_log_path: Path) -> tuple[dict[str, Any], list[s
 
     if entry_count == 0:
         warnings.append("Command log has no entries.")
-    unterminated = max(
-        0,
-        event_counts["process.started"]
-        - event_counts["process.succeeded"]
-        - event_counts["process.failed"],
-    )
+    unterminated = sum(len(starts) for starts in open_starts.values())
     if unterminated:
         warnings.append(f"{unterminated} command start(s) have no matching terminal event.")
 
