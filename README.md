@@ -151,6 +151,24 @@ source audio length, and `--strict` when setup scripts should fail on warnings:
 openphonic inspect-diarization ./data/jobs/<job-id>/diarization.json --duration 3600 --strict
 ```
 
+## Cut Suggestion Inspection
+
+After running the `transcript-review` preset, summarize the generated
+non-destructive cut suggestions before manual review:
+
+```bash
+openphonic inspect-cut-suggestions ./data/jobs/<job-id>/cut_suggestions.json
+```
+
+The command reports review status, configured filler words, suggestion counts,
+suggestion types, and proposed cut durations. Use `--duration` to check
+suggestions against the source audio length, and `--strict` when scripts should
+fail on malformed or non-reviewable suggestions:
+
+```bash
+openphonic inspect-cut-suggestions ./data/jobs/<job-id>/cut_suggestions.json --duration 3600 --strict
+```
+
 ## Docker
 
 ```bash

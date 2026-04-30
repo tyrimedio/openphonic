@@ -382,6 +382,18 @@ def _valid_speaker_count(value: Any) -> int | None:
     return value
 
 
+def _valid_non_negative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _finite_timestamp(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    return _finite_float(value)
+
+
 def _inspect_diarization(
     diarization: dict[str, Any],
     *,
@@ -501,6 +513,212 @@ def inspect_diarization(args: argparse.Namespace) -> int:
     print(f"Segments: {summary['segment_count']}")
     print(f"Timed segments: {summary['timed_segments']}/{summary['segment_count']}")
     print(f"Total speaker time: {summary['total_speaker_time']:.3f}s")
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"  - {warning}")
+
+    if args.strict and warnings:
+        return 2
+    return 0
+
+
+def _merged_range_duration(ranges: list[tuple[float, float]]) -> float:
+    if not ranges:
+        return 0.0
+
+    merged: list[tuple[float, float]] = []
+    for start, end in sorted(ranges):
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+            continue
+        previous_start, previous_end = merged[-1]
+        merged[-1] = (previous_start, max(previous_end, end))
+    return sum(end - start for start, end in merged)
+
+
+def _inspect_cut_suggestions(
+    cut_suggestions: dict[str, Any],
+    *,
+    duration_bound: float | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    suggestions = cut_suggestions.get("suggestions")
+    if not isinstance(suggestions, list):
+        raise ValueError("Cut suggestions must include a suggestions list.")
+
+    warnings: list[str] = []
+    type_counts: dict[str, int] = {}
+    seen_ids: set[str] = set()
+    duplicate_ids = 0
+    missing_ids = 0
+    missing_types = 0
+    invalid_timing = 0
+    duration_mismatches = 0
+    timed_suggestions = 0
+    suggested_ranges: list[tuple[float, float]] = []
+    suggested_duration = 0.0
+
+    status = cut_suggestions.get("status")
+    if not isinstance(status, str) or not status:
+        warnings.append("Cut suggestions status must be a non-empty string.")
+    elif status != "not_applied":
+        warnings.append(f"Cut suggestions are not ready for review: {status}.")
+
+    declared_suggestion_count = _valid_non_negative_int(cut_suggestions.get("suggestion_count"))
+    if "suggestion_count" not in cut_suggestions or declared_suggestion_count is None:
+        warnings.append("Cut suggestions suggestion_count must be a non-negative integer.")
+    if declared_suggestion_count is not None and declared_suggestion_count != len(suggestions):
+        warnings.append(
+            "Cut suggestions suggestion_count does not match the suggestions list "
+            f"({declared_suggestion_count} != {len(suggestions)})."
+        )
+
+    configured_words = cut_suggestions.get("configured_words")
+    if not isinstance(configured_words, list) or any(
+        not isinstance(word, str) or not word for word in configured_words
+    ):
+        warnings.append("Cut suggestions configured_words must be a list of non-empty strings.")
+        configured_words = []
+
+    min_silence_seconds = _finite_timestamp(cut_suggestions.get("min_silence_seconds"))
+    if "min_silence_seconds" in cut_suggestions and (
+        min_silence_seconds is None or min_silence_seconds < 0
+    ):
+        warnings.append("Cut suggestions min_silence_seconds must be non-negative.")
+        min_silence_seconds = None
+
+    for suggestion_index, suggestion in enumerate(suggestions):
+        if not isinstance(suggestion, dict):
+            warnings.append(f"Suggestion {suggestion_index} is not an object.")
+            invalid_timing += 1
+            missing_ids += 1
+            missing_types += 1
+            continue
+
+        suggestion_id = suggestion.get("id")
+        if isinstance(suggestion_id, str) and suggestion_id:
+            if suggestion_id in seen_ids:
+                duplicate_ids += 1
+            seen_ids.add(suggestion_id)
+        else:
+            missing_ids += 1
+
+        suggestion_type = suggestion.get("type")
+        if isinstance(suggestion_type, str) and suggestion_type:
+            type_counts[suggestion_type] = type_counts.get(suggestion_type, 0) + 1
+        else:
+            missing_types += 1
+
+        start = _finite_timestamp(suggestion.get("start"))
+        end = _finite_timestamp(suggestion.get("end"))
+        duration = _finite_timestamp(suggestion.get("duration"))
+        timing_valid = (
+            start is not None
+            and end is not None
+            and duration is not None
+            and start >= 0
+            and end >= 0
+            and duration >= 0
+            and end >= start
+            and (duration_bound is None or end <= duration_bound)
+        )
+        if not timing_valid:
+            invalid_timing += 1
+            continue
+
+        expected_duration = end - start
+        if abs(duration - expected_duration) > 0.01:
+            duration_mismatches += 1
+            continue
+
+        timed_suggestions += 1
+        suggested_duration += duration
+        suggested_ranges.append((start, end))
+
+    if missing_ids:
+        warnings.append(f"{missing_ids} cut suggestion(s) have no id.")
+    if duplicate_ids:
+        warnings.append(f"{duplicate_ids} cut suggestion id(s) are duplicated.")
+    if missing_types:
+        warnings.append(f"{missing_types} cut suggestion(s) have no type.")
+    if invalid_timing:
+        warnings.append(f"{invalid_timing} cut suggestion timing value(s) are invalid.")
+    if duration_mismatches:
+        warnings.append(
+            f"{duration_mismatches} cut suggestion duration value(s) do not match start/end."
+        )
+
+    return (
+        {
+            "status": status if isinstance(status, str) and status else "-",
+            "reason": cut_suggestions.get("reason") or "-",
+            "source_artifact": cut_suggestions.get("source_artifact") or "-",
+            "configured_words": configured_words,
+            "min_silence_seconds": min_silence_seconds,
+            "suggestion_count": len(suggestions),
+            "declared_suggestion_count": declared_suggestion_count,
+            "timed_suggestions": timed_suggestions,
+            "type_counts": type_counts,
+            "suggested_duration": suggested_duration,
+            "merged_cut_duration": _merged_range_duration(suggested_ranges),
+        },
+        warnings,
+    )
+
+
+def inspect_cut_suggestions(args: argparse.Namespace) -> int:
+    configure_logging()
+    suggestions_path = Path(args.cut_suggestions).expanduser().resolve()
+    try:
+        cut_suggestions = json.loads(suggestions_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"Cut suggestion inspection failed: {exc}", file=sys.stderr)
+        return 2
+    except UnicodeDecodeError as exc:
+        print(f"Cut suggestion inspection failed: invalid UTF-8: {exc}", file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"Cut suggestion inspection failed: invalid JSON: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"Cut suggestion inspection failed: invalid JSON: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(cut_suggestions, dict):
+        print(
+            "Cut suggestion inspection failed: cut suggestions must be a JSON object.",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        summary, warnings = _inspect_cut_suggestions(
+            cut_suggestions,
+            duration_bound=getattr(args, "duration", None),
+        )
+    except ValueError as exc:
+        print(f"Cut suggestion inspection failed: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Cut suggestions: {suggestions_path}")
+    print(f"Status: {summary['status']}")
+    print(f"Reason: {summary['reason']}")
+    print(f"Source artifact: {summary['source_artifact']}")
+    configured_words = summary["configured_words"]
+    print(f"Configured words: {', '.join(configured_words) if configured_words else '-'}")
+    min_silence_seconds = summary["min_silence_seconds"]
+    print(
+        f"Minimum silence: {min_silence_seconds:.3f}s"
+        if min_silence_seconds is not None
+        else "Minimum silence: -"
+    )
+    print(f"Suggestions: {summary['suggestion_count']}")
+    print(f"Timed suggestions: {summary['timed_suggestions']}/{summary['suggestion_count']}")
+    type_counts = summary["type_counts"]
+    type_summary = ", ".join(
+        f"{suggestion_type}={count}" for suggestion_type, count in sorted(type_counts.items())
+    )
+    print(f"Types: {type_summary if type_summary else '-'}")
+    print(f"Suggested duration: {summary['suggested_duration']:.3f}s")
+    print(f"Merged cut duration: {summary['merged_cut_duration']:.3f}s")
     if warnings:
         print("Warnings:")
         for warning in warnings:
@@ -633,6 +851,23 @@ def main() -> int:
         help="Return a non-zero exit code when diarization quality warnings are present.",
     )
     diarization.set_defaults(func=inspect_diarization)
+
+    cut_suggestions = subparsers.add_parser(
+        "inspect-cut-suggestions",
+        help="Summarize cut suggestion artifact timing and review readiness.",
+    )
+    cut_suggestions.add_argument("cut_suggestions", help="Path to cut_suggestions.json.")
+    cut_suggestions.add_argument(
+        "--duration",
+        type=_non_negative_float,
+        help="Optional source audio duration in seconds for timing bounds.",
+    )
+    cut_suggestions.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return a non-zero exit code when cut suggestion warnings are present.",
+    )
+    cut_suggestions.set_defaults(func=inspect_cut_suggestions)
 
     args = parser.parse_args()
     return args.func(args)
