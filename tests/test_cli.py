@@ -453,6 +453,50 @@ def test_inspect_diarization_handles_overflowing_timestamp_values(
     assert "Traceback" not in captured.err
 
 
+def test_inspect_diarization_reports_invalid_utf8(
+    tmp_path,
+    capsys,
+) -> None:
+    diarization_path = tmp_path / "diarization.json"
+    diarization_path.write_bytes(b"\xff")
+
+    result = inspect_diarization(
+        argparse.Namespace(diarization=str(diarization_path), duration=None, strict=False)
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Diarization inspection failed: invalid UTF-8:" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_inspect_diarization_reports_json_value_errors(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    diarization_path = tmp_path / "diarization.json"
+    diarization_path.write_text('{"segments": []}', encoding="utf-8")
+
+    def raise_value_error(text: str) -> None:
+        _ = text
+        raise ValueError("exceeds the limit for integer string conversion")
+
+    monkeypatch.setattr("openphonic.cli.json.loads", raise_value_error)
+
+    result = inspect_diarization(
+        argparse.Namespace(diarization=str(diarization_path), duration=None, strict=False)
+    )
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert (
+        "Diarization inspection failed: invalid JSON: "
+        "exceeds the limit for integer string conversion"
+    ) in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_inspect_diarization_rejects_invalid_artifacts(
     tmp_path,
     capsys,

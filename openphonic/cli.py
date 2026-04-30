@@ -467,7 +467,13 @@ def inspect_diarization(args: argparse.Namespace) -> int:
     except OSError as exc:
         print(f"Diarization inspection failed: {exc}", file=sys.stderr)
         return 2
+    except UnicodeDecodeError as exc:
+        print(f"Diarization inspection failed: invalid UTF-8: {exc}", file=sys.stderr)
+        return 2
     except json.JSONDecodeError as exc:
+        print(f"Diarization inspection failed: invalid JSON: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
         print(f"Diarization inspection failed: invalid JSON: {exc}", file=sys.stderr)
         return 2
     if not isinstance(diarization, dict):
