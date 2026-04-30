@@ -729,6 +729,160 @@ def inspect_cut_suggestions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _path_status(path_value: Any, *, expected: str = "any") -> tuple[str, Path | None]:
+    if not isinstance(path_value, str) or not path_value:
+        return "missing", None
+    path = Path(path_value).expanduser()
+    if expected == "file":
+        exists = path.is_file()
+    elif expected == "dir":
+        exists = path.is_dir()
+    else:
+        exists = path.exists()
+    return ("ok" if exists else "missing", path)
+
+
+def _load_job_manifest(manifest_path: Path) -> dict[str, Any]:
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"could not read manifest: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"manifest is not valid UTF-8: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"manifest is invalid JSON: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(f"manifest is invalid JSON: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest must be a JSON object.")
+    return manifest
+
+
+def _inspect_job_manifest(
+    manifest: dict[str, Any],
+    *,
+    work_dir: Path,
+) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+
+    status = manifest.get("status")
+    if not isinstance(status, str) or not status:
+        warnings.append("Pipeline manifest status must be a non-empty string.")
+        status = "-"
+
+    pipeline_name = manifest.get("pipeline_name")
+    if not isinstance(pipeline_name, str) or not pipeline_name:
+        pipeline_name = "-"
+
+    created_at = manifest.get("created_at")
+    if not isinstance(created_at, str) or not created_at:
+        created_at = "-"
+
+    manifest_work_dir_status, manifest_work_dir = _path_status(
+        manifest.get("work_dir"), expected="dir"
+    )
+    if manifest_work_dir is None:
+        warnings.append("Pipeline manifest work_dir must be a non-empty path.")
+    elif manifest_work_dir.resolve() != work_dir:
+        warnings.append(
+            f"Pipeline manifest work_dir does not match inspected directory: {work_dir}"
+        )
+
+    input_status, input_path = _path_status(manifest.get("input_path"), expected="file")
+    if input_path is None:
+        warnings.append("Pipeline manifest input_path must be a non-empty path.")
+    elif input_status != "ok":
+        warnings.append(f"Pipeline input is missing: {input_path}")
+
+    output_status, output_path = _path_status(manifest.get("output_path"), expected="file")
+    if status == "succeeded" and output_path is None:
+        warnings.append("Succeeded pipeline manifest must include output_path.")
+    elif output_path is not None and output_status != "ok":
+        warnings.append(f"Pipeline output is missing: {output_path}")
+
+    artifacts = manifest.get("artifacts")
+    artifact_rows: list[dict[str, Any]] = []
+    if not isinstance(artifacts, dict):
+        warnings.append("Pipeline manifest artifacts must be a mapping.")
+        artifacts = {}
+
+    for name, path_value in sorted(artifacts.items()):
+        if not isinstance(name, str) or not name:
+            warnings.append("Pipeline manifest contains an artifact with an invalid name.")
+            continue
+        path_status, path = _path_status(path_value, expected="file")
+        if path is None:
+            warnings.append(f"Pipeline artifact {name} must be a non-empty path.")
+            artifact_rows.append({"name": name, "path": "-", "status": "missing"})
+            continue
+        if path_status != "ok":
+            warnings.append(f"Pipeline artifact {name} is missing: {path}")
+        artifact_rows.append({"name": name, "path": path, "status": path_status})
+
+    existing_artifacts = sum(1 for artifact in artifact_rows if artifact["status"] == "ok")
+    return (
+        {
+            "status": status,
+            "pipeline_name": pipeline_name,
+            "created_at": created_at,
+            "work_dir": work_dir,
+            "manifest_work_dir": manifest_work_dir,
+            "manifest_work_dir_status": manifest_work_dir_status,
+            "input_path": input_path,
+            "input_status": input_status,
+            "output_path": output_path,
+            "output_status": output_status,
+            "artifact_rows": artifact_rows,
+            "artifact_count": len(artifact_rows),
+            "existing_artifacts": existing_artifacts,
+        },
+        warnings,
+    )
+
+
+def inspect_job(args: argparse.Namespace) -> int:
+    configure_logging()
+    work_dir = Path(args.work_dir).expanduser().resolve()
+    if not work_dir.is_dir():
+        print(f"Job inspection failed: work directory does not exist: {work_dir}", file=sys.stderr)
+        return 2
+
+    manifest_path = work_dir / "pipeline_manifest.json"
+    if not manifest_path.is_file():
+        print(
+            f"Job inspection failed: pipeline manifest not found: {manifest_path}", file=sys.stderr
+        )
+        return 2
+
+    try:
+        manifest = _load_job_manifest(manifest_path)
+        summary, warnings = _inspect_job_manifest(manifest, work_dir=work_dir)
+    except ValueError as exc:
+        print(f"Job inspection failed: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Job work directory: {summary['work_dir']}")
+    print(f"Manifest: {manifest_path}")
+    print(f"Status: {summary['status']}")
+    print(f"Pipeline: {summary['pipeline_name']}")
+    print(f"Created: {summary['created_at']}")
+    input_path = summary["input_path"]
+    print(f"Input: {input_path if input_path is not None else '-'} [{summary['input_status']}]")
+    output_path = summary["output_path"]
+    print(f"Output: {output_path if output_path is not None else '-'} [{summary['output_status']}]")
+    print(f"Artifacts: {summary['existing_artifacts']}/{summary['artifact_count']} present")
+    for artifact in summary["artifact_rows"]:
+        print(f"  - {artifact['name']}: {artifact['path']} [{artifact['status']}]")
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"  - {warning}")
+
+    if args.strict and warnings:
+        return 2
+    return 0
+
+
 def smoke_test(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
@@ -868,6 +1022,18 @@ def main() -> int:
         help="Return a non-zero exit code when cut suggestion warnings are present.",
     )
     cut_suggestions.set_defaults(func=inspect_cut_suggestions)
+
+    job = subparsers.add_parser(
+        "inspect-job",
+        help="Summarize a pipeline work directory and verify manifest artifacts.",
+    )
+    job.add_argument("work_dir", help="Pipeline work directory containing pipeline_manifest.json.")
+    job.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return a non-zero exit code when job inspection warnings are present.",
+    )
+    job.set_defaults(func=inspect_job)
 
     args = parser.parse_args()
     return args.func(args)
