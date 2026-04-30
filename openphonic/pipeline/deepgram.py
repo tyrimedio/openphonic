@@ -41,6 +41,8 @@ def transcribe_deepgram_file(audio_path: Path, options: DeepgramOptions) -> dict
         params["diarize"] = "true"
     if options.language:
         params["language"] = options.language
+    else:
+        params["detect_language"] = "true"
     return _post_audio_file(
         endpoint=options.endpoint,
         api_key=options.api_key,

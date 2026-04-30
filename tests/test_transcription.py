@@ -327,3 +327,30 @@ def test_transcription_stage_requires_deepgram_api_key(tmp_path, monkeypatch) ->
             TranscriptionStage(PipelineConfig(name="test")).run(input_path, tmp_path)
     finally:
         get_settings.cache_clear()
+
+
+def test_transcription_stage_preserves_unparseable_deepgram_response(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    input_path = tmp_path / "input.wav"
+    input_path.write_bytes(b"audio")
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "deepgram")
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg_test")
+    get_settings.cache_clear()
+
+    def fake_transcribe(path, options):
+        _ = path, options
+        return {"results": {"channels": []}}
+
+    monkeypatch.setattr("openphonic.pipeline.stages.transcribe_deepgram_file", fake_transcribe)
+
+    try:
+        with pytest.raises(StageError, match="did not include any result channels") as raised:
+            TranscriptionStage(PipelineConfig(name="test")).run(input_path, tmp_path)
+    finally:
+        get_settings.cache_clear()
+
+    raw_path = tmp_path / "deepgram_response.json"
+    assert raised.value.artifacts == {"deepgram_response": raw_path}
+    assert json.loads(raw_path.read_text(encoding="utf-8")) == {"results": {"channels": []}}

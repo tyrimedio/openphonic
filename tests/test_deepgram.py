@@ -1,4 +1,5 @@
 import json
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -74,11 +75,61 @@ def test_transcribe_deepgram_file_posts_prerecorded_audio_request(
     assert "utterances=true" in request_path
     assert "diarize=true" in request_path
     assert "language=en" in request_path
+    assert "detect_language=true" not in request_path
     assert calls["headers"]["Authorization"] == "Token dg_test"
     assert calls["headers"]["Content-Type"] in {"audio/x-wav", "audio/wav"}
     assert calls["headers"]["Content-Length"] == "5"
     assert calls["body"] == b"audio"
     assert calls["closed"] is True
+
+
+def test_transcribe_deepgram_file_detects_language_when_not_configured(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    audio_path = tmp_path / "input.wav"
+    audio_path.write_bytes(b"audio")
+    calls: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+        reason = "OK"
+
+        def read(self) -> bytes:
+            return json.dumps({"results": {"channels": []}}).encode()
+
+    class FakeConnection:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def putrequest(self, method: str, path: str) -> None:
+            calls["request"] = {"method": method, "path": path}
+
+        def putheader(self, name: str, value: str) -> None:
+            pass
+
+        def endheaders(self) -> None:
+            pass
+
+        def send(self, chunk: bytes) -> None:
+            pass
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("openphonic.pipeline.deepgram.http.client.HTTPSConnection", FakeConnection)
+
+    transcribe_deepgram_file(
+        audio_path,
+        DeepgramOptions(api_key="dg_test", model="nova-3", language=None),
+    )
+
+    query = parse_qs(urlparse(calls["request"]["path"]).query)
+    assert query["detect_language"] == ["true"]
+    assert "language" not in query
 
 
 def test_transcribe_deepgram_file_reports_http_errors(tmp_path, monkeypatch) -> None:

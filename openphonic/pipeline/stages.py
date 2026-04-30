@@ -352,17 +352,22 @@ class TranscriptionStage(PipelineStage):
                     diarize=diarize,
                 ),
             )
-            transcript = deepgram_response_to_transcript(
-                response,
-                model=model_name,
-                language=language,
-            )
         except DeepgramError as exc:
             raise StageError(str(exc)) from exc
 
         raw_path = work_dir / "deepgram_response.json"
         raw_path.write_text(json.dumps(response, indent=2), encoding="utf-8")
         require_artifact(raw_path, "Deepgram response")
+        artifacts = {"deepgram_response": raw_path}
+
+        try:
+            transcript = deepgram_response_to_transcript(
+                response,
+                model=model_name,
+                language=language,
+            )
+        except DeepgramError as exc:
+            raise StageError(str(exc), artifacts=artifacts) from exc
 
         json_path = work_dir / "transcript.json"
         json_path.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
@@ -372,11 +377,7 @@ class TranscriptionStage(PipelineStage):
         vtt_path.write_text(_segments_to_vtt(transcript["segments"]), encoding="utf-8")
         require_artifact(vtt_path, "Transcription")
 
-        artifacts = {
-            "transcript_json": json_path,
-            "transcript_vtt": vtt_path,
-            "deepgram_response": raw_path,
-        }
+        artifacts.update({"transcript_json": json_path, "transcript_vtt": vtt_path})
         if diarize:
             try:
                 diarization = deepgram_response_to_diarization(response, model=model_name)
