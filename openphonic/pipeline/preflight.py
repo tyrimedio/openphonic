@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from openphonic.core.settings import Settings, get_settings
 from openphonic.pipeline.config import PipelineConfig
+from openphonic.pipeline.deepgram import DeepgramError, validate_deepgram_api_key
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,16 @@ def _deepgram_transcription_issues(settings: Settings) -> list[PipelinePreflight
             PipelinePreflightIssue(
                 stage="transcription",
                 message="Deepgram transcription provider requires DEEPGRAM_API_KEY.",
+            )
+        )
+        return issues
+    try:
+        validate_deepgram_api_key(settings.deepgram_api_key)
+    except DeepgramError as exc:
+        issues.append(
+            PipelinePreflightIssue(
+                stage="transcription",
+                message=f"Deepgram API key could not be validated: {exc}",
             )
         )
     return issues

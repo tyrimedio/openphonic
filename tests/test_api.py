@@ -15,6 +15,7 @@ from openphonic.api.routes import (
 from openphonic.core.database import create_job, get_job, init_db, list_jobs, update_job
 from openphonic.core.settings import get_settings
 from openphonic.main import create_app
+from openphonic.pipeline.deepgram import DeepgramError
 from openphonic.services.storage import JobArtifact, artifact_bundle_root, job_dir
 
 
@@ -497,6 +498,43 @@ def test_startup_cleans_abandoned_artifact_bundle_snapshots(tmp_path, monkeypatc
 
     assert response.status_code == 200
     assert not bundle_root.exists()
+
+
+def test_startup_validates_deepgram_provider(tmp_path, monkeypatch) -> None:
+    configure_tmp_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "deepgram")
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg_test")
+    get_settings.cache_clear()
+    calls: list[str] = []
+
+    def validate(api_key: str):
+        calls.append(api_key)
+        return {"member_id": "member-1"}
+
+    monkeypatch.setattr("openphonic.main.validate_deepgram_api_key", validate)
+
+    with TestClient(create_app()) as client:
+        response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert calls == ["dg_test"]
+
+
+def test_startup_rejects_invalid_deepgram_provider(tmp_path, monkeypatch) -> None:
+    configure_tmp_settings(tmp_path, monkeypatch)
+    monkeypatch.setenv("TRANSCRIPTION_PROVIDER", "deepgram")
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg_bad")
+    get_settings.cache_clear()
+
+    def validate(api_key: str) -> None:
+        _ = api_key
+        raise DeepgramError("invalid credentials")
+
+    monkeypatch.setattr("openphonic.main.validate_deepgram_api_key", validate)
+
+    with pytest.raises(RuntimeError, match="Deepgram provider setup failed: invalid credentials"):
+        with TestClient(create_app()):
+            pass
 
 
 def test_transcript_page_renders_segments_and_word_timestamps(tmp_path, monkeypatch) -> None:
