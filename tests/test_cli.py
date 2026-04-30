@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from openphonic.cli import process_file, readiness, smoke_test
+from openphonic.cli import inspect_transcript, process_file, readiness, smoke_test
 from openphonic.core.settings import get_settings
 
 
@@ -153,6 +153,91 @@ stages:
     assert "Intro/outro insertion requires intro_path or outro_path." in captured.err
     assert not (tmp_path / "work").exists()
     assert not output_path.exists()
+
+
+def test_inspect_transcript_reports_word_timestamp_coverage(
+    tmp_path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(
+        """
+{
+  "engine": "faster-whisper",
+  "model": "tiny",
+  "language": "en",
+  "duration": 1.4,
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 1.4,
+      "text": "Hello world",
+      "words": [
+        {"start": 0.0, "end": 0.5, "word": "Hello"},
+        {"start": 0.6, "end": 1.1, "word": "world"}
+      ]
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_transcript(argparse.Namespace(transcript=str(transcript_path), strict=False))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Transcript: {transcript_path.resolve()}" in captured.out
+    assert "Engine: faster-whisper" in captured.out
+    assert "Model: tiny" in captured.out
+    assert "Language: en" in captured.out
+    assert "Duration: 1.400s" in captured.out
+    assert "Segments: 1" in captured.out
+    assert "Segments with words: 1/1" in captured.out
+    assert "Words: 2" in captured.out
+    assert "Timed words: 2/2 (100.0%)" in captured.out
+    assert "Warnings:" not in captured.out
+
+
+def test_inspect_transcript_strict_fails_on_missing_word_timestamps(
+    tmp_path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(
+        """
+{
+  "segments": [
+    {"start": 0.0, "end": 1.0, "text": "No words", "words": []}
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_transcript(argparse.Namespace(transcript=str(transcript_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Segments: 1" in captured.out
+    assert "Words: 0" in captured.out
+    assert "Timed words: 0/0 (0.0%)" in captured.out
+    assert "Transcript has no word timestamps." in captured.out
+
+
+def test_inspect_transcript_rejects_invalid_artifacts(
+    tmp_path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text("[]", encoding="utf-8")
+
+    result = inspect_transcript(argparse.Namespace(transcript=str(transcript_path), strict=False))
+
+    assert result == 2
+    assert (
+        "Transcript inspection failed: transcript must be a JSON object." in capsys.readouterr().err
+    )
 
 
 def test_smoke_test_generates_input_and_copies_output(

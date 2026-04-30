@@ -117,6 +117,23 @@ blocked:
 openphonic readiness --strict
 ```
 
+## Transcript Inspection
+
+After running a transcription preset on real audio, summarize the transcript
+artifact before reviewing corrections or cut suggestions:
+
+```bash
+openphonic inspect-transcript ./data/jobs/<job-id>/transcript.json
+```
+
+The command reports segment counts, word counts, timed-word coverage, and
+warnings for missing or invalid timestamps. Use `--strict` when validating ML
+setup from a script:
+
+```bash
+openphonic inspect-transcript ./data/jobs/<job-id>/transcript.json --strict
+```
+
 ## Docker
 
 ```bash
