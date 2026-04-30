@@ -295,6 +295,40 @@ def test_inspect_transcript_handles_overflowing_timestamp_values(
     assert "Traceback" not in captured.err
 
 
+def test_inspect_transcript_strict_fails_on_timestamps_after_duration(
+    tmp_path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(
+        """
+{
+  "duration": 1.0,
+  "segments": [
+    {
+      "start": 1.1,
+      "end": 1.2,
+      "text": "After audio",
+      "words": [
+        {"start": 1.1, "end": 1.2, "word": "late"}
+      ]
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_transcript(argparse.Namespace(transcript=str(transcript_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Duration: 1.000s" in captured.out
+    assert "Timed words: 0/1 (0.0%)" in captured.out
+    assert "Some transcript words are missing valid timestamps." in captured.out
+    assert "2 transcript timing value(s) are invalid." in captured.out
+
+
 def test_inspect_transcript_rejects_invalid_artifacts(
     tmp_path,
     capsys,

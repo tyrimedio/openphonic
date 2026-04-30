@@ -240,6 +240,7 @@ def _inspect_transcript(transcript: dict[str, Any]) -> tuple[dict[str, Any], lis
     duration = _finite_float(transcript.get("duration"))
     if "duration" in transcript and (duration is None or duration < 0):
         invalid_timing += 1
+    duration_bound = duration if duration is not None and duration >= 0 else None
 
     for segment_index, segment in enumerate(segments):
         if not isinstance(segment, dict):
@@ -251,7 +252,10 @@ def _inspect_transcript(transcript: dict[str, Any]) -> tuple[dict[str, Any], lis
         segment_timing_valid = (
             start is not None and end is not None and start >= 0 and end >= 0 and end >= start
         )
-        if not segment_timing_valid:
+        segment_within_duration = duration_bound is None or (
+            segment_timing_valid and end is not None and end <= duration_bound
+        )
+        if not segment_timing_valid or not segment_within_duration:
             invalid_timing += 1
 
         words = segment.get("words") or []
@@ -275,6 +279,7 @@ def _inspect_transcript(transcript: dict[str, Any]) -> tuple[dict[str, Any], lis
                 and word_start >= 0
                 and word_end >= 0
                 and word_end >= word_start
+                and (duration_bound is None or word_end <= duration_bound)
                 and (
                     not segment_timing_valid
                     or (
