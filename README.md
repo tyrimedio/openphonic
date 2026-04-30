@@ -106,6 +106,21 @@ The command reads `pipeline_manifest.json`, reports the pipeline status, input,
 output, and artifact paths, and warns when expected files are missing. Use
 `--strict` when local validation scripts should fail on missing artifacts.
 
+## Command Log Inspection
+
+Each pipeline run writes `commands.jsonl` with FFmpeg and FFprobe starts,
+successes, failures, return codes, and durations. Inspect it when a smoke test or
+job artifact needs a quick command-level summary:
+
+```bash
+openphonic inspect-commands ./data/smoke-test/work/commands.jsonl
+openphonic inspect-commands ./data/jobs/<job-id>/commands.jsonl --strict
+```
+
+The command reports process starts, successes, failures, malformed log entries,
+executables used, and total recorded command duration. Use `--strict` when
+failure or malformed command events should fail local validation.
+
 ## Preset Readiness
 
 Check which built-in and custom presets can run on the current machine before

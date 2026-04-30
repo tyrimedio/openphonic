@@ -5,6 +5,7 @@ import json
 import math
 import shutil
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -942,6 +943,145 @@ def inspect_job(args: argparse.Namespace) -> int:
     return 0
 
 
+def _valid_returncode(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _inspect_command_log(command_log_path: Path) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    event_counts: Counter[str] = Counter()
+    executable_counts: Counter[str] = Counter()
+    failure_rows: list[dict[str, Any]] = []
+    entry_count = 0
+    malformed_entries = 0
+    total_duration_seconds = 0.0
+
+    try:
+        with command_log_path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    malformed_entries += 1
+                    warnings.append(f"Line {line_number} is blank.")
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    malformed_entries += 1
+                    warnings.append(f"Line {line_number} is invalid JSON: {exc}")
+                    continue
+                except ValueError as exc:
+                    malformed_entries += 1
+                    warnings.append(f"Line {line_number} is invalid JSON: {exc}")
+                    continue
+                if not isinstance(row, dict):
+                    malformed_entries += 1
+                    warnings.append(f"Line {line_number} must be a JSON object.")
+                    continue
+
+                entry_count += 1
+                event = row.get("event")
+                if not isinstance(event, str) or not event:
+                    warnings.append(f"Line {line_number} event must be a non-empty string.")
+                    continue
+                event_counts[event] += 1
+
+                executable = row.get("executable")
+                executable_name = executable if isinstance(executable, str) and executable else "-"
+                if event == "process.started":
+                    if executable_name == "-":
+                        warnings.append(f"Line {line_number} process.started has no executable.")
+                    else:
+                        executable_counts[executable_name] += 1
+
+                if event not in {"process.succeeded", "process.failed"}:
+                    continue
+
+                returncode = _valid_returncode(row.get("returncode"))
+                if returncode is None:
+                    warnings.append(f"Line {line_number} {event} has invalid returncode.")
+                elif event == "process.succeeded" and returncode != 0:
+                    warnings.append(
+                        f"Line {line_number} process.succeeded recorded returncode {returncode}."
+                    )
+                elif event == "process.failed":
+                    failure_rows.append(
+                        {
+                            "line_number": line_number,
+                            "executable": executable_name,
+                            "returncode": returncode,
+                        }
+                    )
+                    warnings.append(
+                        f"Line {line_number} process.failed recorded returncode {returncode}."
+                    )
+
+                duration_ms = _finite_timestamp(row.get("duration_ms"))
+                if duration_ms is None or duration_ms < 0:
+                    warnings.append(f"Line {line_number} {event} has invalid duration_ms.")
+                else:
+                    total_duration_seconds += duration_ms / 1000.0
+    except OSError as exc:
+        raise ValueError(f"could not read command log: {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"invalid UTF-8: {exc}") from exc
+
+    if entry_count == 0:
+        warnings.append("Command log has no entries.")
+
+    return (
+        {
+            "entries": entry_count,
+            "malformed_entries": malformed_entries,
+            "started": event_counts["process.started"],
+            "succeeded": event_counts["process.succeeded"],
+            "failed": event_counts["process.failed"],
+            "executables": executable_counts,
+            "failure_rows": failure_rows,
+            "total_duration_seconds": total_duration_seconds,
+        },
+        warnings,
+    )
+
+
+def inspect_commands(args: argparse.Namespace) -> int:
+    configure_logging()
+    command_log_path = Path(args.command_log).expanduser().resolve()
+    try:
+        summary, warnings = _inspect_command_log(command_log_path)
+    except ValueError as exc:
+        print(f"Command log inspection failed: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"Command log: {command_log_path}")
+    print(f"Entries: {summary['entries']}")
+    print(f"Started: {summary['started']}")
+    print(f"Succeeded: {summary['succeeded']}")
+    print(f"Failed: {summary['failed']}")
+    print(f"Malformed entries: {summary['malformed_entries']}")
+    executable_summary = ", ".join(
+        f"{executable}={count}" for executable, count in sorted(summary["executables"].items())
+    )
+    print(f"Executables: {executable_summary if executable_summary else '-'}")
+    print(f"Total duration: {summary['total_duration_seconds']:.3f}s")
+    if summary["failure_rows"]:
+        print("Failures:")
+        for failure in summary["failure_rows"]:
+            print(
+                f"  - line {failure['line_number']}: "
+                f"{failure['executable']} returncode={failure['returncode']}"
+            )
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"  - {warning}")
+
+    if args.strict and warnings:
+        return 2
+    return 0
+
+
 def smoke_test(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
@@ -1093,6 +1233,18 @@ def main() -> int:
         help="Return a non-zero exit code when job inspection warnings are present.",
     )
     job.set_defaults(func=inspect_job)
+
+    command_log = subparsers.add_parser(
+        "inspect-commands",
+        help="Summarize a commands.jsonl process log and surface command failures.",
+    )
+    command_log.add_argument("command_log", help="Path to commands.jsonl.")
+    command_log.add_argument(
+        "--strict",
+        action="store_true",
+        help="Return a non-zero exit code when command log warnings are present.",
+    )
+    command_log.set_defaults(func=inspect_commands)
 
     args = parser.parse_args()
     return args.func(args)
