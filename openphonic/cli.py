@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
 from openphonic.core.logging import configure_logging
-from openphonic.core.settings import get_settings
-from openphonic.pipeline.config import PipelineConfig
+from openphonic.core.settings import Settings, get_settings
+from openphonic.pipeline.config import PipelineConfig, load_pipeline_config_for_preset
 from openphonic.pipeline.ffmpeg import run_command
+from openphonic.pipeline.preflight import format_preflight_issues, pipeline_preflight_issues
 from openphonic.pipeline.runner import PipelineRunner
 
 
@@ -51,6 +53,16 @@ def _configured_output_suffix(config: PipelineConfig) -> str:
     return f".{container}" if container else ".m4a"
 
 
+def _load_smoke_config(args: argparse.Namespace, settings: Settings) -> PipelineConfig:
+    if args.preset:
+        return load_pipeline_config_for_preset(
+            args.preset,
+            default_path=settings.pipeline_config,
+            preset_dir=settings.preset_dir,
+        )
+    return PipelineConfig.from_path(Path(args.config or settings.pipeline_config))
+
+
 def process_file(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
@@ -75,8 +87,18 @@ def process_file(args: argparse.Namespace) -> int:
 def smoke_test(args: argparse.Namespace) -> int:
     configure_logging()
     settings = get_settings()
-    config_path = Path(args.config or settings.pipeline_config)
-    config = PipelineConfig.from_path(config_path)
+    try:
+        config = _load_smoke_config(args, settings)
+    except (OSError, TypeError, ValueError) as exc:
+        print(f"Smoke test config failed: {exc}", file=sys.stderr)
+        return 2
+    preflight_issues = pipeline_preflight_issues(config, settings)
+    if preflight_issues:
+        print(
+            f"Smoke test preflight failed: {format_preflight_issues(preflight_issues)}",
+            file=sys.stderr,
+        )
+        return 2
     output_path = (
         Path(args.output).expanduser().resolve()
         if args.output
@@ -120,7 +142,9 @@ def main() -> int:
         help="Generate a tiny local input and run the configured pipeline.",
     )
     smoke.add_argument("--output", help="Processed output path.")
-    smoke.add_argument("--config", help="Pipeline config path.")
+    smoke_config = smoke.add_mutually_exclusive_group()
+    smoke_config.add_argument("--config", help="Pipeline config path.")
+    smoke_config.add_argument("--preset", help="Built-in or custom pipeline preset id.")
     smoke.add_argument("--work-dir", help="Directory for generated input and artifacts.")
     smoke.add_argument(
         "--duration",
