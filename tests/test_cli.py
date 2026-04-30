@@ -728,6 +728,53 @@ def test_inspect_job_reports_manifest_artifacts(
     assert "Warnings:" not in captured.out
 
 
+def test_inspect_job_anchors_relative_manifest_paths_to_job_base(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_dir = tmp_path / "project"
+    work_dir = project_dir / "data" / "jobs" / "job-1"
+    upload_dir = project_dir / "data" / "uploads" / "job-1"
+    unrelated_cwd = tmp_path / "elsewhere"
+    work_dir.mkdir(parents=True)
+    upload_dir.mkdir(parents=True)
+    unrelated_cwd.mkdir()
+    input_path = upload_dir / "input.wav"
+    output_path = work_dir / "processed.m4a"
+    metadata_path = work_dir / "00_media_metadata.json"
+    input_path.write_bytes(b"input")
+    output_path.write_bytes(b"output")
+    metadata_path.write_text("{}", encoding="utf-8")
+    (work_dir / "pipeline_manifest.json").write_text(
+        json.dumps(
+            {
+                "created_at": "2026-04-30T00:00:00+00:00",
+                "status": "succeeded",
+                "pipeline_name": "podcast-default",
+                "input_path": "data/uploads/job-1/input.wav",
+                "work_dir": "data/jobs/job-1",
+                "output_path": "data/jobs/job-1/processed.m4a",
+                "artifacts": {
+                    "final_audio": "data/jobs/job-1/processed.m4a",
+                    "media_metadata": "data/jobs/job-1/00_media_metadata.json",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(unrelated_cwd)
+
+    result = inspect_job(argparse.Namespace(work_dir=str(work_dir.resolve()), strict=True))
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert f"Input: {input_path} [ok]" in captured.out
+    assert f"Output: {output_path} [ok]" in captured.out
+    assert "Artifacts: 2/2 present" in captured.out
+    assert "Warnings:" not in captured.out
+
+
 def test_inspect_job_strict_fails_on_missing_paths(
     tmp_path,
     capsys,

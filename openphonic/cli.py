@@ -729,17 +729,57 @@ def inspect_cut_suggestions(args: argparse.Namespace) -> int:
     return 0
 
 
-def _path_status(path_value: Any, *, expected: str = "any") -> tuple[str, Path | None]:
+def _path_exists(path: Path, *, expected: str) -> bool:
+    if expected == "file":
+        return path.is_file()
+    if expected == "dir":
+        return path.is_dir()
+    return path.exists()
+
+
+def _path_status(
+    path_value: Any,
+    *,
+    expected: str = "any",
+    base_dir: Path | None = None,
+    fallback_dir: Path | None = None,
+) -> tuple[str, Path | None]:
     if not isinstance(path_value, str) or not path_value:
         return "missing", None
-    path = Path(path_value).expanduser()
-    if expected == "file":
-        exists = path.is_file()
-    elif expected == "dir":
-        exists = path.is_dir()
+    raw_path = Path(path_value).expanduser()
+    if raw_path.is_absolute():
+        candidates = [raw_path]
     else:
-        exists = path.exists()
-    return ("ok" if exists else "missing", path)
+        candidates = []
+        if base_dir is not None:
+            candidates.append(base_dir / raw_path)
+        if fallback_dir is not None:
+            candidates.append(fallback_dir / raw_path)
+        if not candidates:
+            candidates.append(raw_path)
+
+    for candidate in candidates:
+        if _path_exists(candidate, expected=expected):
+            return "ok", candidate
+    return "missing", candidates[0]
+
+
+def _relative_manifest_base(work_dir_value: Any, *, inspected_work_dir: Path) -> Path | None:
+    if not isinstance(work_dir_value, str) or not work_dir_value:
+        return None
+    manifest_work_dir = Path(work_dir_value).expanduser()
+    if manifest_work_dir.is_absolute():
+        return None
+
+    parts = manifest_work_dir.parts
+    if not parts or parts == (".",):
+        return inspected_work_dir
+    if (
+        len(inspected_work_dir.parts) >= len(parts)
+        and inspected_work_dir.parts[-len(parts) :] == parts
+    ):
+        return inspected_work_dir.parents[len(parts) - 1]
+    return None
 
 
 def _load_job_manifest(manifest_path: Path) -> dict[str, Any]:
@@ -778,8 +818,12 @@ def _inspect_job_manifest(
     if not isinstance(created_at, str) or not created_at:
         created_at = "-"
 
+    manifest_work_dir_value = manifest.get("work_dir")
+    relative_base = _relative_manifest_base(manifest_work_dir_value, inspected_work_dir=work_dir)
     manifest_work_dir_status, manifest_work_dir = _path_status(
-        manifest.get("work_dir"), expected="dir"
+        manifest_work_dir_value,
+        expected="dir",
+        base_dir=relative_base,
     )
     if manifest_work_dir is None:
         warnings.append("Pipeline manifest work_dir must be a non-empty path.")
@@ -788,13 +832,23 @@ def _inspect_job_manifest(
             f"Pipeline manifest work_dir does not match inspected directory: {work_dir}"
         )
 
-    input_status, input_path = _path_status(manifest.get("input_path"), expected="file")
+    input_status, input_path = _path_status(
+        manifest.get("input_path"),
+        expected="file",
+        base_dir=relative_base,
+        fallback_dir=work_dir,
+    )
     if input_path is None:
         warnings.append("Pipeline manifest input_path must be a non-empty path.")
     elif input_status != "ok":
         warnings.append(f"Pipeline input is missing: {input_path}")
 
-    output_status, output_path = _path_status(manifest.get("output_path"), expected="file")
+    output_status, output_path = _path_status(
+        manifest.get("output_path"),
+        expected="file",
+        base_dir=relative_base,
+        fallback_dir=work_dir,
+    )
     if status == "succeeded" and output_path is None:
         warnings.append("Succeeded pipeline manifest must include output_path.")
     elif output_path is not None and output_status != "ok":
@@ -810,7 +864,12 @@ def _inspect_job_manifest(
         if not isinstance(name, str) or not name:
             warnings.append("Pipeline manifest contains an artifact with an invalid name.")
             continue
-        path_status, path = _path_status(path_value, expected="file")
+        path_status, path = _path_status(
+            path_value,
+            expected="file",
+            base_dir=relative_base,
+            fallback_dir=work_dir,
+        )
         if path is None:
             warnings.append(f"Pipeline artifact {name} must be a non-empty path.")
             artifact_rows.append({"name": name, "path": "-", "status": "missing"})
