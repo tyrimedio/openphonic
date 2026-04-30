@@ -226,6 +226,35 @@ docker compose up --build
 
 The app stores uploads, processed files, and SQLite data in the `openphonic-data` volume.
 
+## Hosted Deployment Direction
+
+The planned hosted deployment is an operator-managed app for non-technical
+users. The target shape is:
+
+```text
+Users
+  |
+  v
+Cloudflare Tunnel + Access email allowlist
+  |
+  v
+CPU VPS running Openphonic with Docker Compose
+  |
+  +--> local FFmpeg processing
+  +--> local SQLite and filesystem artifacts
+  +--> hosted ASR/diarization provider adapter
+```
+
+The selected future provider path is Deepgram Nova-3 for hosted transcription
+and diarization. That adapter is not implemented yet; current releases still use
+local `faster-whisper` and `pyannote.audio` when ML presets are enabled. Do not
+set Deepgram-only environment variables until the adapter lands.
+
+The intended v1 hosted security boundary is Cloudflare Access in front of the
+whole app, not per-user accounts inside Openphonic. The app should continue to
+work locally without paid services, while future hosted-provider code remains
+optional and explicit.
+
 ## Pipeline
 
 The default preset lives in [config/default.yml](config/default.yml). It runs:
@@ -301,11 +330,22 @@ expected CPU/GPU runtime before enabling these stages for production jobs.
 
 ## Scaling Notes
 
-For 10 people or fewer, the included SQLite + local worker model is enough to start. If you later need public multi-user hosting, the main changes are:
+For 10 people or fewer, the included SQLite + local worker model is enough to
+start. The near-term hosted target is still a single CPU VPS, with Cloudflare
+Tunnel and Access handling public ingress and authentication. In that mode,
+FFmpeg stays local, but transcription and diarization should move to a hosted
+provider adapter so non-technical users do not manage local ML dependencies.
 
+The main changes before public multi-user hosting are:
+
+- Add the optional Deepgram transcription/diarization provider adapter
+- Keep local `faster-whisper` and `pyannote.audio` paths intact behind a local
+  provider mode
+- Document Cloudflare Tunnel + Access deployment and backup setup
 - Move job execution to a real queue such as Redis Queue, Dramatiq, or Celery
 - Store media in S3-compatible object storage
-- Put auth and per-user quotas in front of uploads
+- Add app-native auth and per-user quotas only after the Cloudflare Access-gated
+  v1 is stable
 - Run ML workers separately from the API process
 - Add GPU worker scheduling if you enable Demucs/WhisperX/pyannote at scale
 
