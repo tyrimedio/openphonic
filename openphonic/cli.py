@@ -220,7 +220,7 @@ def readiness(args: argparse.Namespace) -> int:
 def _finite_float(value: Any) -> float | None:
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return parsed if math.isfinite(parsed) else None
 
@@ -237,6 +237,9 @@ def _inspect_transcript(transcript: dict[str, Any]) -> tuple[dict[str, Any], lis
     word_count = 0
     timed_words = 0
     invalid_timing = 0
+    duration = _finite_float(transcript.get("duration"))
+    if "duration" in transcript and (duration is None or duration < 0):
+        invalid_timing += 1
 
     for segment_index, segment in enumerate(segments):
         if not isinstance(segment, dict):
@@ -245,7 +248,10 @@ def _inspect_transcript(transcript: dict[str, Any]) -> tuple[dict[str, Any], lis
         segment_count += 1
         start = _finite_float(segment.get("start"))
         end = _finite_float(segment.get("end"))
-        if start is None or end is None or end < start:
+        segment_timing_valid = (
+            start is not None and end is not None and start >= 0 and end >= 0 and end >= start
+        )
+        if not segment_timing_valid:
             invalid_timing += 1
 
         words = segment.get("words") or []
@@ -263,7 +269,23 @@ def _inspect_transcript(transcript: dict[str, Any]) -> tuple[dict[str, Any], lis
             word_count += 1
             word_start = _finite_float(word.get("start"))
             word_end = _finite_float(word.get("end"))
-            if word_start is None or word_end is None or word_end < word_start:
+            word_timing_valid = (
+                word_start is not None
+                and word_end is not None
+                and word_start >= 0
+                and word_end >= 0
+                and word_end >= word_start
+                and (
+                    not segment_timing_valid
+                    or (
+                        start is not None
+                        and end is not None
+                        and word_start >= start
+                        and word_end <= end
+                    )
+                )
+            )
+            if not word_timing_valid:
                 invalid_timing += 1
             else:
                 timed_words += 1
@@ -285,7 +307,7 @@ def _inspect_transcript(transcript: dict[str, Any]) -> tuple[dict[str, Any], lis
             "engine": transcript.get("engine") or "-",
             "model": transcript.get("model") or "-",
             "language": transcript.get("language") or "-",
-            "duration": _finite_float(transcript.get("duration")),
+            "duration": duration,
             "segment_count": segment_count,
             "segments_with_words": segments_with_words,
             "word_count": word_count,

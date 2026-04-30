@@ -225,6 +225,76 @@ def test_inspect_transcript_strict_fails_on_missing_word_timestamps(
     assert "Transcript has no word timestamps." in captured.out
 
 
+def test_inspect_transcript_strict_fails_on_invalid_word_timestamps(
+    tmp_path,
+    capsys,
+) -> None:
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(
+        """
+{
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 1.0,
+      "text": "Bad words",
+      "words": [
+        {"start": -0.5, "end": 0.1, "word": "negative"},
+        {"start": 0.2, "end": 1.2, "word": "outside"}
+      ]
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_transcript(argparse.Namespace(transcript=str(transcript_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Words: 2" in captured.out
+    assert "Timed words: 0/2 (0.0%)" in captured.out
+    assert "Some transcript words are missing valid timestamps." in captured.out
+    assert "2 transcript timing value(s) are invalid." in captured.out
+
+
+def test_inspect_transcript_handles_overflowing_timestamp_values(
+    tmp_path,
+    capsys,
+) -> None:
+    huge_timestamp = "1" + ("0" * 1000)
+    transcript_path = tmp_path / "transcript.json"
+    transcript_path.write_text(
+        f"""
+{{
+  "duration": {huge_timestamp},
+  "segments": [
+    {{
+      "start": 0.0,
+      "end": {huge_timestamp},
+      "text": "Huge timestamps",
+      "words": [
+        {{"start": 0.0, "end": {huge_timestamp}, "word": "huge"}}
+      ]
+    }}
+  ]
+}}
+""",
+        encoding="utf-8",
+    )
+
+    result = inspect_transcript(argparse.Namespace(transcript=str(transcript_path), strict=True))
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert "Duration: -" in captured.out
+    assert "Timed words: 0/1 (0.0%)" in captured.out
+    assert "Some transcript words are missing valid timestamps." in captured.out
+    assert "3 transcript timing value(s) are invalid." in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_inspect_transcript_rejects_invalid_artifacts(
     tmp_path,
     capsys,
