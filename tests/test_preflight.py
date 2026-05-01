@@ -2,6 +2,7 @@ from pathlib import Path
 
 from openphonic.core.settings import Settings
 from openphonic.pipeline.config import PipelineConfig
+from openphonic.pipeline.deepgram import DeepgramError
 from openphonic.pipeline.preflight import pipeline_preflight_issues
 
 
@@ -74,6 +75,10 @@ def test_preflight_accepts_deepgram_provider_without_local_ml_checks(
         deepgram_api_key="dg_test",
     )
     monkeypatch.setattr("openphonic.pipeline.preflight._module_available", lambda module: False)
+    monkeypatch.setattr(
+        "openphonic.pipeline.preflight.validate_deepgram_api_key",
+        lambda api_key: {"member_id": "member-1"},
+    )
 
     issues = pipeline_preflight_issues(
         PipelineConfig(
@@ -105,11 +110,45 @@ def test_preflight_requires_deepgram_api_key_for_deepgram_provider(tmp_path) -> 
     assert messages == ["Deepgram transcription provider requires DEEPGRAM_API_KEY."]
 
 
-def test_preflight_requires_transcription_for_deepgram_diarization(tmp_path) -> None:
+def test_preflight_reports_invalid_deepgram_api_key(tmp_path, monkeypatch) -> None:
+    settings = make_settings(
+        tmp_path,
+        transcription_provider="deepgram",
+        deepgram_api_key="dg_bad",
+    )
+
+    def invalid_key(api_key: str) -> None:
+        _ = api_key
+        raise DeepgramError("Deepgram API key validation failed with HTTP 401: invalid credentials")
+
+    monkeypatch.setattr(
+        "openphonic.pipeline.preflight.validate_deepgram_api_key",
+        invalid_key,
+    )
+
+    issues = pipeline_preflight_issues(
+        PipelineConfig(name="hosted", stages={"transcription": {"enabled": True}}),
+        settings,
+    )
+
+    messages = [issue.message for issue in issues]
+    assert messages == [
+        (
+            "Deepgram API key could not be validated: "
+            "Deepgram API key validation failed with HTTP 401: invalid credentials"
+        )
+    ]
+
+
+def test_preflight_requires_transcription_for_deepgram_diarization(tmp_path, monkeypatch) -> None:
     settings = make_settings(
         tmp_path,
         transcription_provider="deepgram",
         deepgram_api_key="dg_test",
+    )
+    monkeypatch.setattr(
+        "openphonic.pipeline.preflight.validate_deepgram_api_key",
+        lambda api_key: {"member_id": "member-1"},
     )
 
     issues = pipeline_preflight_issues(

@@ -132,9 +132,10 @@ Only start this after the FFmpeg-only smoke and web checks pass.
 This section covers the local ML path. Hosted transcription and diarization can
 also run through the optional Deepgram provider by setting
 `TRANSCRIPTION_PROVIDER=deepgram` and `DEEPGRAM_API_KEY`, but that path makes a
-paid external API call when a transcription preset actually runs. Keep local
-verification on `TRANSCRIPTION_PROVIDER=local` unless you intentionally want to
-test the hosted provider with a real key.
+remote auth check at startup/readiness and a paid external API call when a
+transcription preset actually runs. Keep local verification on
+`TRANSCRIPTION_PROVIDER=local` unless you intentionally want to test the hosted
+provider with a real key.
 
 ```bash
 pip install -e ".[dev,ml]"

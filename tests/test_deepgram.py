@@ -8,7 +8,92 @@ from openphonic.pipeline.deepgram import (
     DeepgramOptions,
     deepgram_response_to_transcript,
     transcribe_deepgram_file,
+    validate_deepgram_api_key,
 )
+
+
+def test_validate_deepgram_api_key_calls_auth_token_endpoint(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+        reason = "OK"
+
+        def read(self) -> bytes:
+            return json.dumps({"member_id": "member-1"}).encode()
+
+    class FakeConnection:
+        def __init__(self, host: str, port: int | None = None, *, timeout: int) -> None:
+            calls["connection"] = {"host": host, "port": port, "timeout": timeout}
+            self.headers: dict[str, str] = {}
+
+        def putrequest(self, method: str, path: str) -> None:
+            calls["request"] = {"method": method, "path": path}
+
+        def putheader(self, name: str, value: str) -> None:
+            self.headers[name] = value
+            calls["headers"] = self.headers
+
+        def endheaders(self) -> None:
+            calls["headers_ended"] = True
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            calls["closed"] = True
+
+    validate_deepgram_api_key.cache_clear()
+    monkeypatch.setattr("openphonic.pipeline.deepgram.http.client.HTTPSConnection", FakeConnection)
+
+    try:
+        payload = validate_deepgram_api_key("dg_test", timeout_seconds=3)
+    finally:
+        validate_deepgram_api_key.cache_clear()
+
+    assert payload == {"member_id": "member-1"}
+    assert calls["connection"] == {"host": "api.deepgram.com", "port": None, "timeout": 3}
+    assert calls["request"] == {"method": "GET", "path": "/v1/auth/token"}
+    assert calls["headers"]["Authorization"] == "Token dg_test"
+    assert calls["headers"]["Accept"] == "application/json"
+    assert calls["closed"] is True
+
+
+def test_validate_deepgram_api_key_reports_invalid_credentials(monkeypatch) -> None:
+    class FakeResponse:
+        status = 401
+        reason = "Unauthorized"
+
+        def read(self) -> bytes:
+            return b'{"err_msg":"invalid credentials"}'
+
+    class FakeConnection:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        def putrequest(self, method: str, path: str) -> None:
+            pass
+
+        def putheader(self, name: str, value: str) -> None:
+            pass
+
+        def endheaders(self) -> None:
+            pass
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            pass
+
+    validate_deepgram_api_key.cache_clear()
+    monkeypatch.setattr("openphonic.pipeline.deepgram.http.client.HTTPSConnection", FakeConnection)
+
+    try:
+        with pytest.raises(DeepgramError, match="HTTP 401"):
+            validate_deepgram_api_key("dg_bad")
+    finally:
+        validate_deepgram_api_key.cache_clear()
 
 
 def test_transcribe_deepgram_file_posts_prerecorded_audio_request(

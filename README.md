@@ -253,7 +253,9 @@ processed audio to Deepgram's pre-recorded `/v1/listen` API with smart
 formatting and utterances enabled. When the selected preset enables
 diarization, speaker labels are requested in the same Deepgram call and written
 to Openphonic's existing `diarization.json` and RTTM artifacts instead of
-running local pyannote.
+running local pyannote. Startup and preset preflight validate the configured
+Deepgram key with Deepgram's `/v1/auth/token` endpoint before queueing
+Deepgram-backed jobs; this checks credentials without uploading audio.
 
 The intended v1 hosted security boundary is Cloudflare Access in front of the
 whole app, not per-user accounts inside Openphonic. The app should continue to

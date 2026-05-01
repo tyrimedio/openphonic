@@ -5,11 +5,14 @@ import json
 import math
 import mimetypes
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
 
 DEFAULT_DEEPGRAM_API_URL = "https://api.deepgram.com/v1/listen"
+DEFAULT_DEEPGRAM_AUTH_URL = "https://api.deepgram.com/v1/auth/token"
+DEFAULT_DEEPGRAM_AUTH_TIMEOUT_SECONDS = 10
 DEFAULT_DEEPGRAM_MODEL = "nova-3"
 DEFAULT_DEEPGRAM_TIMEOUT_SECONDS = 650
 _CHUNK_BYTES = 1024 * 1024
@@ -27,6 +30,48 @@ class DeepgramOptions:
     diarize: bool = False
     endpoint: str = DEFAULT_DEEPGRAM_API_URL
     timeout_seconds: int = DEFAULT_DEEPGRAM_TIMEOUT_SECONDS
+
+
+@lru_cache(maxsize=32)
+def validate_deepgram_api_key(
+    api_key: str,
+    *,
+    endpoint: str = DEFAULT_DEEPGRAM_AUTH_URL,
+    timeout_seconds: int = DEFAULT_DEEPGRAM_AUTH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    if not api_key:
+        raise DeepgramError("Deepgram transcription provider requires DEEPGRAM_API_KEY.")
+
+    parsed = urlparse(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise DeepgramError(f"Invalid Deepgram auth endpoint: {endpoint}")
+
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    connection_class = (
+        http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    )
+    connection = connection_class(parsed.hostname, parsed.port, timeout=timeout_seconds)
+    try:
+        connection.putrequest("GET", path)
+        connection.putheader("Authorization", f"Token {api_key}")
+        connection.putheader("Accept", "application/json")
+        connection.endheaders()
+        response = connection.getresponse()
+        response_body = response.read()
+    except OSError as exc:
+        raise DeepgramError(f"Deepgram API key validation request failed: {exc}") from exc
+    finally:
+        connection.close()
+
+    return _response_json_or_error(
+        status=response.status,
+        reason=response.reason,
+        body=response_body,
+        error_prefix="Deepgram API key validation failed",
+    )
 
 
 def transcribe_deepgram_file(audio_path: Path, options: DeepgramOptions) -> dict[str, Any]:
@@ -171,17 +216,31 @@ def _post_audio_file(
     finally:
         connection.close()
 
-    body_text = response_body.decode("utf-8", errors="replace")
-    if response.status < 200 or response.status >= 300:
-        detail = body_text.strip()[:500] or response.reason
-        raise DeepgramError(f"Deepgram request failed with HTTP {response.status}: {detail}")
+    return _response_json_or_error(
+        status=response.status,
+        reason=response.reason,
+        body=response_body,
+        error_prefix="Deepgram request failed",
+    )
 
+
+def _response_json_or_error(
+    *,
+    status: int,
+    reason: str,
+    body: bytes,
+    error_prefix: str,
+) -> dict[str, Any]:
+    body_text = body.decode("utf-8", errors="replace")
+    if status < 200 or status >= 300:
+        detail = body_text.strip()[:500] or reason
+        raise DeepgramError(f"{error_prefix} with HTTP {status}: {detail}")
     try:
         payload = json.loads(body_text)
     except json.JSONDecodeError as exc:
-        raise DeepgramError("Deepgram response was not valid JSON.") from exc
+        raise DeepgramError(f"{error_prefix}: response was not valid JSON.") from exc
     if not isinstance(payload, dict):
-        raise DeepgramError("Deepgram response must be a JSON object.")
+        raise DeepgramError(f"{error_prefix}: response must be a JSON object.")
     return payload
 
 
